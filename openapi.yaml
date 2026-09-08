@@ -1,0 +1,58 @@
+openapi: 3.0.3
+info:
+  title: Investment Engine API
+  description: >
+    An event-driven order execution and portfolio management system,
+    built to practice distributed systems patterns in Go.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /orders:
+    post:
+      summary: Create a new order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - assetSymbol
+                - quantity
+                - side
+                - executionType
+              properties:
+                assetSymbol:
+                  type: string
+                  example: "PETR4"
+                quantity:
+                  type: integer
+                  minimum: 1
+                side:
+                  type: string
+                  enum: [BUY, SELL]
+                executionType:
+                  type: string
+                  enum: [MARKET, LIMIT]
+                limitPrice:
+                  type: number
+                  format: double
+                  description: Required only when executionType is LIMIT
+      responses:
+        '201':
+          description: Order created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orderID:
+                    type: string
+                  status:
+                    type: string
+                    enum: [PENDING, EXECUTED, CANCELLED, REJECTED]
+        '400':
+          description: Invalid request body

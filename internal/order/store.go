@@ -39,6 +39,9 @@ func NewPostgresOrderStore(db *sql.DB) *PostgresOrderStore {
 }
 
 func (s *PostgresOrderStore) List(ctx context.Context, filter ListFilter) ([]Order, *pagination.Cursor, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = defaultLimit
+	}
 	conditions := []string{"user_id = $1"}
 	args := []any{filter.UserID}
 

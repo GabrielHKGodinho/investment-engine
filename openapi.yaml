@@ -56,3 +56,83 @@ paths:
                     enum: [PENDING, EXECUTED, CANCELLED, REJECTED]
         '400':
           description: Invalid request body
+    get:
+      summary: List orders for the authenticated user
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque continuation token from a previous response's nextCursor
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, EXECUTED, CANCELLED, REJECTED]
+        - name: side
+          in: query
+          schema:
+            type: string
+            enum: [BUY, SELL]
+        - name: executionType
+          in: query
+          schema:
+            type: string
+            enum: [MARKET, LIMIT]
+        - name: assetSymbol
+          in: query
+          schema:
+            type: string
+        - name: createdAfter
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: createdBefore
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Paginated list of orders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        orderID:
+                          type: string
+                          format: uuid
+                        assetSymbol:
+                          type: string
+                        quantity:
+                          type: integer
+                        side:
+                          type: string
+                          enum: [BUY, SELL]
+                        executionType:
+                          type: string
+                          enum: [MARKET, LIMIT]
+                        status:
+                          type: string
+                          enum: [PENDING, EXECUTED, CANCELLED, REJECTED]
+                        createdAt:
+                          type: string
+                          format: date-time
+                  nextCursor:
+                    type: string
+                    nullable: true
+                  hasMore:
+                    type: boolean

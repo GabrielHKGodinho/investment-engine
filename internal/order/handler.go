@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GabrielHKGodinho/investment-engine/internal/apierror"
 	"github.com/GabrielHKGodinho/investment-engine/internal/auth"
 	"github.com/GabrielHKGodinho/investment-engine/internal/pagination"
 )
@@ -44,59 +45,60 @@ func NewHandler(store OrderStore) *Handler {
 func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.UserIDFromContext(r.Context())
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeUnauthorized, "authentication required", nil)
 		return
 	}
 
 	query := r.URL.Query()
 	filter := ListFilter{UserID: userID, Limit: defaultLimit}
+	var fieldErrors []apierror.FieldError
 
 	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "limit", Message: "must be a positive integer"})
+		} else {
+			if n > maxLimit {
+				n = maxLimit
+			}
+			filter.Limit = n
 		}
-		if n > maxLimit {
-			n = maxLimit
-		}
-		filter.Limit = n
 	}
 
 	if raw := query.Get("cursor"); raw != "" {
 		c, err := pagination.DecodeCursor(raw)
 		if err != nil {
-			http.Error(w, "invalid cursor", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "cursor", Message: "malformed cursor token"})
+		} else {
+			filter.Cursor = &c
 		}
-		filter.Cursor = &c
 	}
 
 	if raw := query.Get("status"); raw != "" {
 		s := Status(strings.ToUpper(raw))
 		if !isValidStatus(s) {
-			http.Error(w, "invalid status", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "status", Message: "must be one of PENDING, EXECUTED, CANCELLED, REJECTED"})
+		} else {
+			filter.Status = &s
 		}
-		filter.Status = &s
 	}
 
 	if raw := query.Get("side"); raw != "" {
 		s := Side(strings.ToUpper(raw))
 		if !isValidSide(s) {
-			http.Error(w, "invalid side", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "side", Message: "must be BUY or SELL"})
+		} else {
+			filter.Side = &s
 		}
-		filter.Side = &s
 	}
 
 	if raw := query.Get("executionType"); raw != "" {
 		e := ExecutionType(strings.ToUpper(raw))
 		if !isValidExecutionType(e) {
-			http.Error(w, "invalid executionType", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "executionType", Message: "must be MARKET or LIMIT"})
+		} else {
+			filter.ExecutionType = &e
 		}
-		filter.ExecutionType = &e
 	}
 
 	if raw := query.Get("assetSymbol"); raw != "" {
@@ -106,24 +108,29 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	if raw := query.Get("createdAfter"); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			http.Error(w, "invalid createdAfter", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "createdAfter", Message: "must be an RFC3339 timestamp"})
+		} else {
+			filter.CreatedAfter = &t
 		}
-		filter.CreatedAfter = &t
 	}
 
 	if raw := query.Get("createdBefore"); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			http.Error(w, "invalid createdBefore", http.StatusBadRequest)
-			return
+			fieldErrors = append(fieldErrors, apierror.FieldError{Field: "createdBefore", Message: "must be an RFC3339 timestamp"})
+		} else {
+			filter.CreatedBefore = &t
 		}
-		filter.CreatedBefore = &t
+	}
+
+	if len(fieldErrors) > 0 {
+		apierror.Write(w, http.StatusBadRequest, apierror.CodeValidation, "one or more query parameters are invalid", fieldErrors)
+		return
 	}
 
 	orders, nextCursor, err := h.store.List(r.Context(), filter)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal error", nil)
 		return
 	}
 
@@ -146,7 +153,7 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	if nextCursor != nil {
 		token, err := pagination.EncodeCursor(*nextCursor)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal error", nil)
 			return
 		}
 		resp.NextCursor = &token

@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package price;
+
+option go_package = "github.com/GabrielHKGodinho/investment-engine/internal/priceservice/pb;pricepb";
+
+// GetQuoteRequest carries the symbol the caller wants a quote for.
+message GetQuoteRequest {
+  string symbol = 1;
+}
+
+// GetQuoteResponse carries the current simulated price for a symbol.
+message GetQuoteResponse {
+  string symbol = 1;
+  double price = 2;
+  int64 timestamp_unix = 3;
+}
+
+// PriceService exposes internal price lookups used by the order engine
+// before an order is executed.
+service PriceService {
+  rpc GetQuote(GetQuoteRequest) returns (GetQuoteResponse);
+}

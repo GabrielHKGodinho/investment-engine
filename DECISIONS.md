@@ -96,3 +96,33 @@ than matched against a real order book of competing buy/sell orders.
   this ADR could mistake the simplification for a knowledge gap rather
   than a deliberate scope decision; this should be called out explicitly
   in the README and in interviews when discussing the project.
+
+# ADR-004: Use PostgreSQL as the primary datastore
+
+## Status
+Accepted
+
+## Context
+The system needs to persist orders and, after execution, update portfolio
+state (positions and balance) consistently — an order's status change and
+its corresponding portfolio update must succeed or fail together. The API
+also needs to filter and paginate orders by multiple fields at once
+(status, side, execution type, asset, date range), as implemented in
+ListOrders. There is also existing hands-on operational experience with
+PostgreSQL from prior production work, including a database migration
+project.
+
+## Decision
+We will use PostgreSQL as the primary datastore for orders, executions,
+and portfolio state.
+
+## Consequences
+- Gained: native transactional guarantees (ACID) for keeping order status
+  and portfolio updates consistent, flexible ad-hoc filtering via SQL
+  without needing to pre-define query patterns, and directly applicable
+  prior operational experience.
+- Accepted trade-off: a relational schema requires more upfront design
+  (migrations, foreign keys) than a schemaless store would, and horizontal
+  scaling later would require more deliberate work (sharding, read
+  replicas) than a natively distributed database would offer out of the
+  box.

@@ -126,3 +126,68 @@ and portfolio state.
   scaling later would require more deliberate work (sharding, read
   replicas) than a natively distributed database would offer out of the
   box.
+
+## ADR-005: Direct Exchange for Order Lifecycle Events
+
+**Status:** Accepted
+
+**Context:**
+
+The Order API needs to notify the Order Consumer asynchronously when an
+order is created, so the consumer can process execution without blocking
+the HTTP request. RabbitMQ was already chosen as the message broker
+(ADR-001). The remaining decision is which exchange type to use for
+routing order events from the API to the consumer(s).
+
+At this stage, the system has exactly one event type (`order created`)
+and exactly one consumer type (Order Consumer). The event set is flat —
+there is no hierarchical structure to the event names yet (e.g. no
+region or asset-class dimension to route on).
+
+Three exchange types were considered:
+
+- **Fanout**: delivers a copy of every message to every bound queue,
+  ignoring the routing key entirely. This would force any future
+  consumer (e.g. an audit service) to receive *all* event types and
+  filter them in application code, even if it only cares about one —
+  pushing filtering work from the broker into every consumer.
+- **Topic**: allows pattern-based routing over a dot-separated routing
+  key (e.g. `order.br.created`) using wildcards. This is strictly more
+  powerful than `direct`, but the extra power is unused today — there
+  is no hierarchical dimension in the current event names to justify
+  wildcard matching. Introducing it now is speculative complexity.
+- **Direct**: routes a message to a queue only if the queue's binding
+  key exactly matches the message's routing key. Multiple queues *can*
+  bind to the same routing key — this is not a 1:1 relationship — so
+  a future second consumer can subscribe to `order.created` by adding
+  a new binding, without changing the exchange type.
+
+**Decision:**
+
+Use a `direct` exchange named `order_events`. The order-created event is
+published with routing key `order.created`. The Order Consumer's queue
+binds to that routing key on `order_events`.
+
+Future order lifecycle events (e.g. `order.cancelled`) will be published
+to the same exchange under their own routing key, letting each consumer
+bind only to the event types it actually needs to handle.
+
+**Consequences:**
+
+- Adding a new consumer for an existing event type (e.g. an audit
+  service reacting to `order.created`) requires only a new queue +
+  binding — no change to the exchange, the publisher, or existing
+  consumers.
+- Adding a *new* event type (e.g. `order.cancelled`) requires only a
+  new routing key on publish and a new binding on the consumer side —
+  the exchange itself does not change.
+- If the event model later grows a genuine hierarchical dimension
+  (e.g. per-region routing) that needs wildcard subscriptions, this
+  decision will need to be revisited in favor of a `topic` exchange.
+  That migration is non-trivial: it requires redeclaring the exchange
+  (RabbitMQ does not allow changing an existing exchange's type) and
+  updating every publisher and binding.
+- Unlike `fanout`, a message published with a routing key that no
+  queue is bound to is silently dropped — there is no catch-all queue
+  today. This is an accepted trade-off, not yet mitigated (no
+  dead-letter-style safety net for unrouted messages at this stage).

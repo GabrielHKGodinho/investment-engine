@@ -1,0 +1,49 @@
+// internal/rabbitmq/connection.go
+package rabbitmq
+
+import (
+	"fmt"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+// Connection wraps the connection to RabbitMQ. It knows nothing about
+// exchanges, queues, or any specific domain — only connection lifecycle.
+type Connection struct {
+	conn *amqp.Connection
+}
+
+// Dial connects to RabbitMQ. It declares nothing — exchange/queue setup
+// is domain-specific and belongs to whichever package owns that topology.
+func Dial(url string) (*Connection, error) {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return nil, fmt.Errorf("rabbitmq: failed to connect: %w", err)
+	}
+	return &Connection{conn: conn}, nil
+}
+
+func (c *Connection) Channel() (*amqp.Channel, error) {
+	channel, err := c.conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("rabbitmq: failed to open channel: %w", err)
+	}
+	return channel, nil
+}
+
+func (c *Connection) Close() error {
+	if err := c.conn.Close(); err != nil {
+		return fmt.Errorf("rabbitmq: failed to close connection: %w", err)
+	}
+	return nil
+}
+
+// DeclareDirectExchange declares a durable, non-auto-deleted direct
+// exchange — the project's standard defaults. Callers only pick the name.
+func DeclareDirectExchange(channel *amqp.Channel, name string) error {
+	err := channel.ExchangeDeclare(name, "direct", true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("rabbitmq: failed to declare exchange %s: %w", name, err)
+	}
+	return nil
+}

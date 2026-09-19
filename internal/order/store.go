@@ -28,6 +28,7 @@ type ListFilter struct {
 
 type OrderStore interface {
 	List(ctx context.Context, filter ListFilter) (orders []Order, nextCursor *pagination.Cursor, err error)
+	Create(ctx context.Context, o Order) (Order, error)
 }
 
 type PostgresOrderStore struct {
@@ -111,4 +112,19 @@ func (s *PostgresOrderStore) List(ctx context.Context, filter ListFilter) ([]Ord
 	}
 
 	return orders, nextCursor, nil
+}
+
+func (s *PostgresOrderStore) Create(ctx context.Context, o Order) (Order, error) {
+	const query = `
+		INSERT INTO orders (id, user_id, asset_symbol, quantity, side, execution_type, limit_price, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING created_at
+	`
+	err := s.db.QueryRowContext(ctx, query,
+		o.ID, o.UserID, o.AssetSymbol, o.Quantity, o.Side, o.ExecutionType, o.LimitPrice, o.Status,
+	).Scan(&o.CreatedAt)
+	if err != nil {
+		return Order{}, fmt.Errorf("create order: %w", err)
+	}
+	return o, nil
 }

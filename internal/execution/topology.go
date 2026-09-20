@@ -9,12 +9,29 @@ import (
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
 
-// OrderQueue is the durable queue the order execution consumer reads from.
-const OrderQueue = "order_execution"
+const (
+	// OrderQueue is the durable queue the order execution consumer reads from.
+	OrderQueue = "order_execution"
+
+	// DeadLetterExchange receives the messages RabbitMQ dead-letters from
+	// OrderQueue: the ones the consumer rejects without requeue.
+	DeadLetterExchange = "order_execution.dlx"
+
+	// DeadLetterQueue keeps those messages for inspection instead of losing them.
+	DeadLetterQueue = "order_execution.dlq"
+
+	deadLetterRoutingKey = "order_execution.dlq"
+)
 
 // SetupTopology declares everything the execution consumer depends on: the
-// order events exchange, its own queue, and the binding between them.
-// Must run once at startup, before consuming.
+// order events exchange, the dead letter exchange and queue, its own work
+// queue, and the bindings between them. Must run once at startup, before
+// consuming.
+//
+// Messages the consumer rejects without requeue are dead-lettered by RabbitMQ
+// to the dead letter queue instead of being discarded (see ADR-009). Queue
+// arguments are immutable: redeclaring an existing queue with different ones
+// fails with PRECONDITION_FAILED, so the old queue has to be deleted first.
 func SetupTopology(channel *amqp.Channel) error {
 	// The API also declares this exchange, but the consumer cannot assume it
 	// started first: binding to a missing exchange is a channel-level error.
@@ -25,7 +42,25 @@ func SetupTopology(channel *amqp.Channel) error {
 		return fmt.Errorf("execution: failed to declare order events exchange: %w", err)
 	}
 
-	if err := rabbitmq.DeclareDurableQueue(channel, OrderQueue); err != nil {
+	if err := rabbitmq.DeclareDirectExchange(channel, DeadLetterExchange); err != nil {
+		return fmt.Errorf("execution: failed to declare dead letter exchange: %w", err)
+	}
+
+	if err := rabbitmq.DeclareDurableQueue(channel, DeadLetterQueue, nil); err != nil {
+		return fmt.Errorf("execution: failed to declare dead letter queue: %w", err)
+	}
+
+	if err := rabbitmq.BindQueue(channel, DeadLetterQueue, DeadLetterExchange, deadLetterRoutingKey); err != nil {
+		return fmt.Errorf("execution: failed to bind dead letter queue: %w", err)
+	}
+
+	// The dead letter destination is declared before OrderQueue, so it already
+	// exists by the time any message can be dead-lettered.
+	orderQueueArguments := amqp.Table{
+		"x-dead-letter-exchange":    DeadLetterExchange,
+		"x-dead-letter-routing-key": deadLetterRoutingKey,
+	}
+	if err := rabbitmq.DeclareDurableQueue(channel, OrderQueue, orderQueueArguments); err != nil {
 		return fmt.Errorf("execution: failed to declare order queue: %w", err)
 	}
 

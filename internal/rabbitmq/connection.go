@@ -49,10 +49,10 @@ func DeclareDirectExchange(channel *amqp.Channel, name string) error {
 }
 
 // DeclareDurableQueue declares a durable, non-exclusive, non-auto-deleted
-// queue — the project's standard defaults for work queues. Callers only
-// pick the name.
-func DeclareDurableQueue(channel *amqp.Channel, name string) error {
-	_, err := channel.QueueDeclare(name, true, false, false, false, nil)
+// queue — the project's standard defaults for work queues. Callers
+// pick the name and the arguments.
+func DeclareDurableQueue(channel *amqp.Channel, name string, args amqp.Table) error {
+	_, err := channel.QueueDeclare(name, true, false, false, false, args)
 	if err != nil {
 		return fmt.Errorf("rabbitmq: failed to declare queue %s: %w", name, err)
 	}

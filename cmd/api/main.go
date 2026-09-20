@@ -2,50 +2,74 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
 
+const (
+	listenAddr = ":8080"
+
+	// shutdownTimeout must stay below the platform's grace period
+	// (docker stop waits 10s by default before sending SIGKILL).
+	shutdownTimeout = 8 * time.Second
+)
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("api stopped with error: %v", err)
+	}
+	log.Println("api stopped")
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Once the first signal cancels ctx, restore the default signal behavior,
+	// so a second Ctrl+C kills the process immediately if shutdown gets stuck.
+	context.AfterFunc(ctx, stop)
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("DATABASE_URL environment variable is required")
+		return errors.New("DATABASE_URL environment variable is required")
 	}
-
 	db, err := postgres.Connect(context.Background(), dsn)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		return fmt.Errorf("api: database setup: %w", err)
 	}
 	defer db.Close()
 	log.Println("connected to database")
 
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		log.Fatal("RABBITMQ_URL environment variable is required")
+		return errors.New("RABBITMQ_URL environment variable is required")
 	}
-
 	conn, err := rabbitmq.Dial(rabbitURL)
 	if err != nil {
-		log.Fatalf("failed to connect to rabbitmq: %v", err)
+		return fmt.Errorf("api: rabbitmq setup: %w", err)
 	}
 	defer conn.Close()
 	log.Println("connected to rabbitmq")
 
 	setupChannel, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("failed to open rabbitmq setup channel: %v", err)
+		return fmt.Errorf("api: order messaging setup: %w", err)
 	}
-	if err := order.SetupMessaging(setupChannel); err != nil {
-		log.Fatalf("failed to set up order messaging: %v", err)
+	err = order.SetupMessaging(setupChannel)
+	_ = setupChannel.Close() // the setup channel is closed on both paths
+	if err != nil {
+		return fmt.Errorf("api: order messaging setup: %w", err)
 	}
-	_ = setupChannel.Close()
 
 	store := order.NewPostgresOrderStore(db)
 	publisher := order.NewPublisher(conn)
@@ -55,9 +79,35 @@ func main() {
 	mux.HandleFunc("GET /orders", handler.ListOrders)
 	mux.HandleFunc("POST /orders", handler.CreateOrder)
 
-	addr := ":8080"
-	log.Printf("api listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second, // max time to read request headers
 	}
+
+	serverErr := make(chan error, 1) // buffered: the goroutine can always send and exit
+	go func() {
+		log.Printf("api listening on %s", listenAddr)
+		serverErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErr:
+		// The server failed by itself (e.g. port already in use).
+		return fmt.Errorf("api: server failed: %w", err)
+	case <-ctx.Done():
+		log.Println("shutdown requested: draining in-flight requests")
+	}
+
+	// ctx is already canceled at this point, so it can't be the parent here.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	// Shutdown runs here, in the body of run(), so it finishes before any
+	// of the deferred closes above.
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("api: graceful shutdown failed: %w", err)
+	}
+
+	return nil
 }

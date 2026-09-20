@@ -129,9 +129,10 @@ and portfolio state.
 
 # ADR-005: Direct Exchange for Order Lifecycle Events
 
-**Status:** Accepted
+## Status
+Accepted
 
-**Context:**
+## Context
 
 The Order API needs to notify the Order Consumer asynchronously when an
 order is created, so the consumer can process execution without blocking
@@ -162,7 +163,7 @@ Three exchange types were considered:
   a future second consumer can subscribe to `order.created` by adding
   a new binding, without changing the exchange type.
 
-**Decision:**
+## Decision
 
 Use a `direct` exchange named `order_events`. The order-created event is
 published with routing key `order.created`. The Order Consumer's queue
@@ -172,7 +173,7 @@ Future order lifecycle events (e.g. `order.cancelled`) will be published
 to the same exchange under their own routing key, letting each consumer
 bind only to the event types it actually needs to handle.
 
-**Consequences:**
+## Consequences
 
 - Adding a new consumer for an existing event type (e.g. an audit
   service reacting to `order.created`) requires only a new queue +
@@ -191,3 +192,109 @@ bind only to the event types it actually needs to handle.
   queue is bound to is silently dropped — there is no catch-all queue
   today. This is an accepted trade-off, not yet mitigated (no
   dead-letter-style safety net for unrouted messages at this stage).
+
+# ADR-006: At-least-once delivery for order execution messages
+
+## Status
+Accepted
+
+## Context
+ADR-001 requires that each order is executed exactly once. A broker and a
+database cannot be updated atomically, so exactly-once delivery is not
+achievable end to end: a consumer that dies between executing an order and
+telling the broker either loses the message or causes a duplicate.
+
+The consumer has to choose which failure it accepts:
+
+- **Ack before processing (at-most-once):** a crash mid-processing loses the
+  order silently. Nothing records that it was ever attempted.
+- **Ack after processing (at-least-once):** a crash between executing and
+  acking makes RabbitMQ redeliver the message, so an order can be executed
+  twice. A duplicate can be detected and neutralized; a lost message leaves
+  no trace to detect.
+
+Messages that can never succeed (malformed JSON, invalid event) must also
+not be requeued forever.
+
+## Decision
+- Manual acknowledgements: the consumer acks only after the handler finishes
+  successfully (at-least-once delivery).
+- Prefetch of 1: RabbitMQ keeps one unacknowledged delivery per consumer.
+  Processing is sequential, so a larger window would only pile deliveries up
+  in memory and increase how many messages are redelivered after a crash.
+- Any handler error rejects the delivery without requeue (`Reject(false)`),
+  so a poison message cannot loop forever. Until the dead-letter queue
+  exists, rejected messages are dropped.
+- The API and the consumer both declare the topology they use (declaring an
+  identical exchange or queue is a no-op), so the start order of the
+  processes does not matter.
+- Duplicates are handled by making the handler idempotent, not by trying to
+  prevent redelivery.
+
+## Consequences
+- Gained: no message is lost when the consumer crashes, is redeployed or
+  loses its connection; the broker returns unacknowledged messages to the
+  queue.
+- Cost: the same order can be delivered twice, so executing an order must be
+  idempotent. Not implemented yet.
+- Known gaps: rejected messages are lost until a dead-letter queue is added;
+  transient failures (database or PriceService down) are treated like poison
+  messages; a retry policy only makes sense once real execution exists.
+
+# ADR-007: Graceful shutdown on SIGTERM and SIGINT
+
+## Status
+Accepted
+
+## Context
+Deploys stop a process by sending SIGTERM and, after a grace period,
+SIGKILL (10s by default in `docker stop`, 30s in Kubernetes). A Go program
+without a signal handler exits immediately on SIGTERM, so:
+
+- the consumer drops the delivery it was processing, and RabbitMQ redelivers
+  it (see ADR-006);
+- the API cuts requests in flight.
+
+The second case is worse than it looks, because `POST /orders` performs two
+writes with no shared transaction: an INSERT and the publish of the
+order-created event. A request cut between them leaves a PENDING order with
+no event, which nobody will ever execute. This was reproduced by holding a
+request open after the INSERT for longer than the shutdown timeout: the
+order was persisted and the request never reached the publish call.
+
+## Decision
+- Both binaries follow the `run() error` pattern, so deferred cleanup runs
+  (`log.Fatalf` skips it), and cancel a context with `signal.NotifyContext`
+  on SIGINT and SIGTERM. After the first signal the default signal behavior
+  is restored (`context.AfterFunc(ctx, stop)`), so a second signal
+  force-kills a stuck shutdown.
+- Consumer: the signal context means "stop taking new work", not "abort the
+  current work". It is only checked between deliveries, so the delivery in
+  progress finishes and is acked. A delivery received after the signal is
+  left unacked, and RabbitMQ requeues it when the channel closes. `Run`
+  returns nil on a clean shutdown.
+- API: `http.Server.Shutdown` with an 8s timeout, on a context derived from
+  `context.Background()` (the signal context is already canceled by then).
+  It runs in the body of `run()`, before the deferred closes of RabbitMQ and
+  PostgreSQL, so requests in flight keep their dependencies until they
+  finish. The server also sets `ReadHeaderTimeout`.
+- The shutdown timeout stays below the platform grace period (8s against
+  Docker's 10s), leaving room for the cleanup that runs after it.
+
+## Consequences
+- Gained: a planned stop finishes what is in flight within the timeout, so a
+  normal deploy causes no redeliveries and no cut requests; the process exits
+  with code 0 on a clean shutdown.
+- Not solved: a crash, a SIGKILL after the grace period, or a request that
+  outlives the timeout still cuts the flow between the INSERT and the publish
+  (the dual-write problem). The usual fix is a transactional outbox: write
+  the event to a table in the same transaction as the order and let a
+  separate relay publish it. Not implemented; candidate for a future ADR.
+- The consumer's in-flight work must fit in the grace period. When real
+  execution (PriceService + database) replaces the simulated 5s, the handler
+  must not receive the signal context, which would abort the work we want to
+  finish. It needs its own context with a timeout.
+- The consumer does not call `Channel.Cancel` before exiting. With prefetch 1
+  and sequential processing, at most one extra delivery is buffered, and
+  closing the channel returns it to the queue. Revisit if deliveries start
+  being processed concurrently.

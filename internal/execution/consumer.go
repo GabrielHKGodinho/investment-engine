@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
@@ -18,13 +19,19 @@ const prefetchCount = 1
 // connection died, or the broker cancelled the consumer (e.g. queue deleted).
 var ErrDeliveriesClosed = errors.New("execution: deliveries channel closed")
 
+// handleTimeout bounds the handling of one delivery. It stays below Docker's
+// 10s stop grace period, so a shutdown that waits for the delivery in progress
+// still fits in it.
+const handleTimeout = 8 * time.Second
+
 // Consumer reads order-created events from the execution queue.
 type Consumer struct {
-	conn *rabbitmq.Connection
+	conn  *rabbitmq.Connection
+	store ExecutionStore
 }
 
-func NewConsumer(conn *rabbitmq.Connection) *Consumer {
-	return &Consumer{conn: conn}
+func NewConsumer(conn *rabbitmq.Connection, store ExecutionStore) *Consumer {
+	return &Consumer{conn: conn, store: store}
 }
 
 // Run declares the topology and processes deliveries. Returns nil
@@ -79,7 +86,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 			log.Printf("received delivery: redelivered=%t", delivery.Redelivered)
 
-			if handleErr := handleOrderCreated(delivery.Body); handleErr != nil {
+			// ctx is the shutdown signal: it means "stop taking new work", not
+			// "abort what is in progress" (ADR-007). The handler gets its own
+			// context, detached from the signal, with a timeout.
+			handleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handleTimeout)
+			handleErr := handleOrderCreated(handleCtx, c.store, delivery.Body)
+			cancel() // not deferred: a defer inside this loop would only run when Run returns
+
+			if handleErr != nil {
 				log.Printf("failed to handle delivery, rejecting without requeue: %v", handleErr)
 				if err := delivery.Reject(false); err != nil {
 					log.Printf("failed to reject delivery: %v", err)

@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/execution"
+	"github.com/GabrielHKGodinho/investment-engine/internal/order"
+	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
 
@@ -31,6 +33,17 @@ func run() error {
 
 	log.Println("consumer starting")
 
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL environment variable is required")
+	}
+	db, err := postgres.Connect(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("consumer: database setup: %w", err)
+	}
+	defer db.Close()
+	log.Println("connected to database")
+
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
 		return errors.New("RABBITMQ_URL environment variable is required")
@@ -42,7 +55,8 @@ func run() error {
 	defer conn.Close()
 	log.Println("connected to rabbitmq")
 
-	consumer := execution.NewConsumer(conn)
+	store := order.NewPostgresOrderStore(db)
+	consumer := execution.NewConsumer(conn, store)
 	if err := consumer.Run(ctx); err != nil {
 		return fmt.Errorf("consumer returned an error while running: %w", err)
 	}

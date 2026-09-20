@@ -127,7 +127,7 @@ and portfolio state.
   replicas) than a natively distributed database would offer out of the
   box.
 
-## ADR-005: Direct Exchange for Order Lifecycle Events
+# ADR-005: Direct Exchange for Order Lifecycle Events
 
 **Status:** Accepted
 

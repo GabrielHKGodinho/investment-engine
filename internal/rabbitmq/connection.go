@@ -47,3 +47,25 @@ func DeclareDirectExchange(channel *amqp.Channel, name string) error {
 	}
 	return nil
 }
+
+// DeclareDurableQueue declares a durable, non-exclusive, non-auto-deleted
+// queue — the project's standard defaults for work queues. Callers only
+// pick the name.
+func DeclareDurableQueue(channel *amqp.Channel, name string) error {
+	_, err := channel.QueueDeclare(name, true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("rabbitmq: failed to declare queue %s: %w", name, err)
+	}
+	return nil
+}
+
+// BindQueue binds a queue to an existing exchange for a routing key.
+func BindQueue(channel *amqp.Channel, queue, exchange, routingKey string) error {
+	if err := channel.QueueBind(queue, routingKey, exchange, false, nil); err != nil {
+		return fmt.Errorf(
+			"rabbitmq: failed to bind queue %s to exchange %s with key %s: %w",
+			queue, exchange, routingKey, err,
+		)
+	}
+	return nil
+}

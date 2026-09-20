@@ -298,3 +298,93 @@ order was persisted and the request never reached the publish call.
   and sequential processing, at most one extra delivery is buffered, and
   closing the channel returns it to the queue. Revisit if deliveries start
   being processed concurrently.
+
+# ADR-008: Idempotent order execution through a conditional status transition
+
+## Status
+Accepted
+
+## Context
+ADR-006 chose at-least-once delivery, so the same order-created message can
+reach the consumer more than once: a crash between execution and ack, a lost
+connection before the ack, a SIGKILL after the shutdown grace period, and
+later multiple replicas. Executing an order twice must not duplicate its
+effect.
+
+There are two usual ways to make a consumer idempotent: a table of processed
+message ids, inserted in the same transaction as the effect, or a conditional
+state change on the business entity. An order already has a lifecycle
+(PENDING, EXECUTED, CANCELLED, REJECTED) and the effect of executing it is a
+state transition.
+
+## Decision
+- Execution claims the order with a single statement:
+  `UPDATE orders SET status = 'EXECUTED' WHERE id = $1 AND status = 'PENDING'`.
+  One affected row means this delivery performed the transition; zero means it
+  did not. The check and the write are one atomic statement, so two concurrent
+  deliveries cannot both win: under PostgreSQL's default Read Committed level
+  the second one waits for the row lock and re-evaluates the condition against
+  the updated row. A SELECT followed by an UPDATE would not be safe.
+- Zero affected rows is disambiguated with an existence check. An order that
+  exists but is not PENDING (already executed, cancelled or rejected) is
+  skipped and acked. An order that does not exist is an error
+  (`ErrOrderNotFound`) and the message is rejected: treating it as a duplicate
+  would hide a broken event.
+- The claim runs after the read-only work. Claiming first would lose the
+  effect if the consumer died right after it: the order would be EXECUTED with
+  nothing done, and the redelivery would be skipped.
+- The handler receives a context detached from the shutdown signal, with its
+  own timeout (see ADR-007).
+
+## Consequences
+- Duplicates and orders cancelled while queued are absorbed by the same guard:
+  skipped and acked, with no effect.
+- When the portfolio update arrives, it must run in the same database
+  transaction as the status transition, so both happen or neither does.
+  Otherwise the ordering problem above comes back. Effects outside the
+  database (email, third-party calls) cannot be made atomic and would need an
+  idempotency key at the receiving system or a processed-messages table.
+- A client that retries `POST /orders` creates two orders. That needs an
+  idempotency key on the API and is not covered here.
+- A zero-row update costs one extra query, only on the rare path.
+
+# ADR-009: Dead-letter queue for rejected order messages
+
+## Status
+Accepted
+
+## Context
+ADR-006 rejects failed deliveries without requeue, so a message that can
+never succeed cannot loop forever, and it left those messages dropped until a
+dead-letter queue existed. A dropped message leaves no trace: nothing to
+inspect and nothing to replay.
+
+## Decision
+- `order_execution` is declared with `x-dead-letter-exchange` set to
+  `order_execution.dlx` and `x-dead-letter-routing-key` set to
+  `order_execution.dlq`. The DLX is a durable direct exchange and the DLQ is a
+  durable queue bound to it with that key. The consumer code is unchanged:
+  rejecting without requeue triggers the dead-lettering.
+- The arguments live in code, because the processes declare their own topology
+  (see ADR-005 and ADR-006), not in policies. The RabbitMQ documentation
+  recommends policies, since queue arguments cannot change without
+  redeploying and deleting the queue. We trade that flexibility for a topology
+  that lives in the repository. Revisit it with the docker-compose setup.
+- Duplicates and already-resolved orders are acked, not rejected, so they
+  never reach the DLQ. It holds only what needs a human.
+- Nothing consumes the DLQ. Inspection and replay are manual, through the
+  management UI.
+
+## Consequences
+- Failed messages are kept, with an `x-death` header that records the reason,
+  the original queue and how many times it happened.
+- Silent failure mode: if the DLX or its binding were missing, RabbitMQ would
+  drop dead-lettered messages without any error. The configuration is only
+  trustworthy if a test sends a bad message and finds it in the DLQ. This was
+  done by hand on 18/09 and should be automated with the messaging tests.
+- Known gap: transient failures (database down, timeouts) are still rejected
+  like poison messages and end in the DLQ, although a retry would succeed. A
+  retry policy (requeue with a limit and a delay, then dead-letter) is pending
+  until real execution exists.
+- Changing the queue arguments requires deleting the queue.
+- Nothing alerts on a growing DLQ, so it goes unnoticed until someone looks.

@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -26,9 +27,9 @@ func NewConsumer(conn *rabbitmq.Connection) *Consumer {
 	return &Consumer{conn: conn}
 }
 
-// Run declares the topology and processes deliveries. It blocks, and always
-// returns a non-nil error: a closed deliveries channel is never a clean exit.
-func (c *Consumer) Run() error {
+// Run declares the topology and processes deliveries. Returns nil
+// whith a clean shutdown.
+func (c *Consumer) Run(ctx context.Context) error {
 	channel, err := c.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("execution: failed to open consumer channel: %w", err)
@@ -57,23 +58,40 @@ func (c *Consumer) Run() error {
 		return fmt.Errorf("execution: failed to start consuming from %s: %w", OrderQueue, err)
 	}
 
-	for delivery := range deliveries {
-		log.Printf("received delivery: redelivered=%t", delivery.Redelivered)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("shutdown requested: not taking new deliveries")
+			return nil
 
-		if handleErr := handleOrderCreated(delivery.Body); handleErr != nil {
-			log.Printf("failed to handle delivery, rejecting without requeue: %v", handleErr)
-			if err := delivery.Reject(false); err != nil {
-				log.Printf("failed to reject delivery: %v", err)
+		case delivery, ok := <-deliveries:
+			if !ok {
+				return ErrDeliveriesClosed
 			}
-			continue
-		}
 
-		// Ack only AFTER handling: a crash mid-processing leaves the delivery
-		// unacked, so RabbitMQ redelivers it.
-		if err := delivery.Ack(false); err != nil {
-			log.Printf("failed to ack delivery: %v", err)
+			// A delivery can arrive at the same moment as the shutdown request.
+			// When both cases are ready, select picks one at random, so re-check.
+			if ctx.Err() != nil {
+				// Left unacked on purpose: RabbitMQ requeues it when the channel closes.
+				log.Println("shutdown requested: leaving a received delivery unacked, it returns to the queue")
+				return nil
+			}
+
+			log.Printf("received delivery: redelivered=%t", delivery.Redelivered)
+
+			if handleErr := handleOrderCreated(delivery.Body); handleErr != nil {
+				log.Printf("failed to handle delivery, rejecting without requeue: %v", handleErr)
+				if err := delivery.Reject(false); err != nil {
+					log.Printf("failed to reject delivery: %v", err)
+				}
+				continue
+			}
+
+			// Ack only AFTER handling: a crash mid-processing leaves the delivery
+			// unacked, so RabbitMQ redelivers it.
+			if err := delivery.Ack(false); err != nil {
+				log.Printf("failed to ack delivery: %v", err)
+			}
 		}
 	}
-
-	return ErrDeliveriesClosed
 }

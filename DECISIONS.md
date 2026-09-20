@@ -196,7 +196,7 @@ bind only to the event types it actually needs to handle.
 # ADR-006: At-least-once delivery for order execution messages
 
 ## Status
-Accepted
+Accepted. The dropped-messages gap is closed by ADR-009.
 
 ## Context
 ADR-001 requires that each order is executed exactly once. A broker and a

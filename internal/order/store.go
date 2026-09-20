@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -127,4 +128,43 @@ func (s *PostgresOrderStore) Create(ctx context.Context, o Order) (Order, error)
 		return Order{}, fmt.Errorf("create order: %w", err)
 	}
 	return o, nil
+}
+
+// ErrOrderNotFound is returned by MarkExecuted when no order has the given id.
+var ErrOrderNotFound = errors.New("order: not found")
+
+// MarkExecuted moves an order from PENDING to EXECUTED in a single atomic
+// statement. It reports whether this call performed the transition:
+//
+//   - (true, nil): the order was PENDING and is now EXECUTED.
+//   - (false, nil): the order exists but was not PENDING (already executed,
+//     cancelled or rejected). Nothing changed; the caller should skip it.
+//   - (false, ErrOrderNotFound): no order has this id.
+func (s *PostgresOrderStore) MarkExecuted(ctx context.Context, id uuid.UUID) (bool, error) {
+	const updateQuery = `UPDATE orders SET status = $1 WHERE id = $2 AND status = $3`
+
+	result, err := s.db.ExecContext(ctx, updateQuery, StatusExecuted, id, StatusPending)
+	if err != nil {
+		return false, fmt.Errorf("mark order executed: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark order executed: rows affected: %w", err)
+	}
+	if rowsAffected == 1 {
+		return true, nil
+	}
+
+	// 0 rows: the order is either not PENDING anymore or does not exist.
+	const existsQuery = `SELECT EXISTS (SELECT 1 FROM orders WHERE id = $1)`
+
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, existsQuery, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("mark order executed: check existence: %w", err)
+	}
+	if !exists {
+		return false, ErrOrderNotFound
+	}
+	return false, nil
 }

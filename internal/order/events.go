@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,6 +55,44 @@ func NewOrderCreatedEvent(o Order) OrderCreatedEvent {
 		LimitPrice:    o.LimitPrice,
 		CreatedAt:     o.CreatedAt,
 	}
+}
+
+// Validate checks the invariants of the event contract. A successful JSON
+// decode only guarantees well-formed JSON with matching types: absent fields
+// silently become zero values, so consumers must call this before trusting
+// the event. It returns on the first violation found.
+func (e OrderCreatedEvent) Validate() error {
+	if e.OrderID == uuid.Nil {
+		return errors.New("order_id is required")
+	}
+	if e.UserID == uuid.Nil {
+		return errors.New("user_id is required")
+	}
+	if e.AssetSymbol == "" {
+		return errors.New("asset_symbol is required")
+	}
+	if e.Quantity <= 0 {
+		return errors.New("quantity must be positive")
+	}
+	if !isValidSide(e.Side) {
+		return fmt.Errorf("invalid side %q", e.Side)
+	}
+	if !isValidExecutionType(e.ExecutionType) {
+		return fmt.Errorf("invalid execution_type %q", e.ExecutionType)
+	}
+
+	switch e.ExecutionType {
+	case ExecutionLimit:
+		if e.LimitPrice == nil || *e.LimitPrice <= 0 {
+			return errors.New("limit_price must be present and positive for LIMIT orders")
+		}
+	case ExecutionMarket:
+		if e.LimitPrice != nil {
+			return errors.New("limit_price must be absent for MARKET orders")
+		}
+	}
+
+	return nil
 }
 
 // Publisher publishes order domain events to RabbitMQ.

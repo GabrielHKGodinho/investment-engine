@@ -168,3 +168,63 @@ func (s *PostgresOrderStore) MarkExecuted(ctx context.Context, id uuid.UUID) (bo
 	}
 	return false, nil
 }
+
+// ExecuteOrder records the execution effect (an executions row) and moves
+// the order from PENDING to EXECUTED, atomically. Same return semantics as
+// the old MarkExecuted:
+//   - (true, nil): the order was PENDING, now EXECUTED, execution recorded.
+//   - (false, nil): the order was not PENDING — nothing changed, caller skips.
+//   - (false, ErrOrderNotFound): no order has this id.
+func (s *PostgresOrderStore) ExecuteOrder(ctx context.Context, orderID uuid.UUID, price float64, quantity int) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("execute order: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	const updateQuery = `UPDATE orders SET status = $1 WHERE id = $2 AND status = $3`
+
+	result, err := tx.ExecContext(ctx, updateQuery, StatusExecuted, orderID, StatusPending)
+	if err != nil {
+		return false, fmt.Errorf("execute order: update status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("execute order: rows affected: %w", err)
+	}
+
+	if rowsAffected == 1 {
+		// The transition happened — this call, and only this call, records
+		// the effect. executed_at is left to the DB's DEFAULT now(), same
+		// pattern as created_at in Create().
+		const insertQuery = `
+			INSERT INTO executions (id, order_id, execution_price, quantity)
+			VALUES ($1, $2, $3, $4)
+		`
+		if _, err := tx.ExecContext(ctx, insertQuery, uuid.New(), orderID, price, quantity); err != nil {
+			return false, fmt.Errorf("execute order: insert execution: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("execute order: commit: %w", err)
+		}
+		return true, nil
+	}
+
+	// 0 rows: the order is either not PENDING anymore or does not exist.
+	const existsQuery = `SELECT EXISTS (SELECT 1 FROM orders WHERE id = $1)`
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx, existsQuery, orderID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("execute order: check existence: %w", err)
+	}
+	if !exists {
+		return false, ErrOrderNotFound
+	}
+
+	// Order exists but wasn't PENDING (duplicate delivery, or already
+	// resolved another way). Nothing was written that needs to persist —
+	// the deferred Rollback discards the failed UPDATE attempt.
+	return false, nil
+}

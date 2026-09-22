@@ -12,6 +12,7 @@ import (
 	"github.com/GabrielHKGodinho/investment-engine/internal/execution"
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
+	"github.com/GabrielHKGodinho/investment-engine/internal/priceservice"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
 
@@ -27,8 +28,6 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Once the first signal cancels ctx, restore the default signal behavior,
-	// so a second Ctrl+C kills the process immediately if shutdown gets stuck.
 	context.AfterFunc(ctx, stop)
 
 	log.Println("consumer starting")
@@ -55,8 +54,19 @@ func run() error {
 	defer conn.Close()
 	log.Println("connected to rabbitmq")
 
+	priceServiceAddr := os.Getenv("PRICE_SERVICE_ADDR")
+	if priceServiceAddr == "" {
+		return errors.New("PRICE_SERVICE_ADDR environment variable is required")
+	}
+	priceClient, err := priceservice.NewClient(priceServiceAddr)
+	if err != nil {
+		return fmt.Errorf("consumer: price service client setup: %w", err)
+	}
+	defer priceClient.Close()
+	log.Println("price service client ready")
+
 	store := order.NewPostgresOrderStore(db)
-	consumer := execution.NewConsumer(conn, store)
+	consumer := execution.NewConsumer(conn, store, priceClient)
 	if err := consumer.Run(ctx); err != nil {
 		return fmt.Errorf("consumer returned an error while running: %w", err)
 	}

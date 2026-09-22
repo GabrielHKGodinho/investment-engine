@@ -5,27 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 )
 
-// simulatedWorkDuration imitates the read-only part of execution (the price
-// lookup). It goes away when the real price lookup is integrated.
-const simulatedWorkDuration = 5 * time.Second
-
 // ExecutionStore is what the execution package needs from persistence. It is
 // declared here, next to its only user, so this package does not depend on a
 // concrete store: *order.PostgresOrderStore satisfies it implicitly.
 type ExecutionStore interface {
-	MarkExecuted(ctx context.Context, id uuid.UUID) (bool, error)
+	ExecuteOrder(ctx context.Context, id uuid.UUID, price float64, quantity int) (bool, error)
+}
+
+// PriceGetter is what the execution package needs from the price service. It
+// is declared here, next to its only user, so this package does not depend
+// on a concrete gRPC client: *priceservice.Client satisfies it implicitly.
+type PriceGetter interface {
+	GetPrice(ctx context.Context, symbol string) (float64, error)
 }
 
 // handleOrderCreated decodes, validates and processes one order created
 // message body. It knows nothing about AMQP, so it can be tested without a broker.
-func handleOrderCreated(ctx context.Context, store ExecutionStore, body []byte) error {
+func handleOrderCreated(ctx context.Context, store ExecutionStore, prices PriceGetter, body []byte) error {
 	event, err := decodeOrderCreated(body)
 	if err != nil {
 		return err
@@ -35,7 +37,7 @@ func handleOrderCreated(ctx context.Context, store ExecutionStore, body []byte) 
 		return fmt.Errorf("execution: invalid order created event: %w", err)
 	}
 
-	return processOrderCreated(ctx, store, event)
+	return processOrderCreated(ctx, store, prices, event)
 }
 
 func decodeOrderCreated(body []byte) (order.OrderCreatedEvent, error) {
@@ -46,25 +48,28 @@ func decodeOrderCreated(body []byte) (order.OrderCreatedEvent, error) {
 	return event, nil
 }
 
-// processOrderCreated executes the order. The read-only part (price lookup)
-// is simulated for now; the status transition is real and idempotent: only
-// the call that finds the order PENDING performs it, so a duplicate delivery
-// is skipped. MarkExecuted runs AFTER the work: today the work has no
-// persisted effect, and when the portfolio writes arrive they will share one
-// transaction with this transition.
-func processOrderCreated(ctx context.Context, store ExecutionStore, event order.OrderCreatedEvent) error {
+// processOrderCreated executes the order: it looks up the current price and
+// then, in a single atomic transition, records the execution effect and
+// moves the order to EXECUTED. ExecuteOrder is idempotent: only the call
+// that finds the order PENDING performs the transition and records the
+// effect, so a duplicate delivery is skipped without side effects.
+func processOrderCreated(ctx context.Context, store ExecutionStore, prices PriceGetter, event order.OrderCreatedEvent) error {
 	log.Printf("executing order %s: %s %d x %s", event.OrderID, event.Side, event.Quantity, event.AssetSymbol)
-	time.Sleep(simulatedWorkDuration)
 
-	executed, err := store.MarkExecuted(ctx, event.OrderID)
+	price, err := prices.GetPrice(ctx, event.AssetSymbol)
 	if err != nil {
-		return fmt.Errorf("execution: failed to mark order %s as executed: %w", event.OrderID, err)
+		return fmt.Errorf("execution: failed to get price for order %s: %w", event.OrderID, err)
+	}
+
+	executed, err := store.ExecuteOrder(ctx, event.OrderID, price, event.Quantity)
+	if err != nil {
+		return fmt.Errorf("execution: failed to execute order %s: %w", event.OrderID, err)
 	}
 	if !executed {
 		log.Printf("order %s is not PENDING anymore, skipping (duplicate delivery or already resolved)", event.OrderID)
 		return nil
 	}
 
-	log.Printf("order %s executed", event.OrderID)
+	log.Printf("order %s executed at price %.2f", event.OrderID, price)
 	return nil
 }

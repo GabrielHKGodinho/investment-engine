@@ -26,12 +26,13 @@ const handleTimeout = 8 * time.Second
 
 // Consumer reads order-created events from the execution queue.
 type Consumer struct {
-	conn  *rabbitmq.Connection
-	store ExecutionStore
+	conn   *rabbitmq.Connection
+	store  ExecutionStore
+	prices PriceGetter
 }
 
-func NewConsumer(conn *rabbitmq.Connection, store ExecutionStore) *Consumer {
-	return &Consumer{conn: conn, store: store}
+func NewConsumer(conn *rabbitmq.Connection, store ExecutionStore, prices PriceGetter) *Consumer {
+	return &Consumer{conn: conn, store: store, prices: prices}
 }
 
 // Run declares the topology and processes deliveries. Returns nil
@@ -90,7 +91,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// "abort what is in progress" (ADR-007). The handler gets its own
 			// context, detached from the signal, with a timeout.
 			handleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handleTimeout)
-			handleErr := handleOrderCreated(handleCtx, c.store, delivery.Body)
+			handleErr := handleOrderCreated(handleCtx, c.store, c.prices, delivery.Body)
 			cancel() // not deferred: a defer inside this loop would only run when Run returns
 
 			if handleErr != nil {

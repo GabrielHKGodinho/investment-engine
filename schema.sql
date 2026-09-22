@@ -9,3 +9,11 @@ CREATE TABLE orders (
 	status         TEXT NOT NULL CHECK (status IN ('PENDING', 'EXECUTED', 'CANCELLED', 'REJECTED')),
 	created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE executions (
+	id              UUID PRIMARY KEY,
+	order_id        UUID NOT NULL REFERENCES orders(id),
+	execution_price DOUBLE PRECISION NOT NULL,
+	quantity        INTEGER NOT NULL,
+	executed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

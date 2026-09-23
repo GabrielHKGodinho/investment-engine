@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,16 +106,25 @@ func NewPublisher(conn *rabbitmq.Connection) *Publisher {
 }
 
 // PublishOrderCreated publishes an OrderCreatedEvent to the order_events
-// exchange under the order.created routing key.
+// exchange under the order.created routing key. Publishing with mandatory
+// asks the broker to return the message instead of silently dropping it if
+// no queue is bound to route it (closing the gap left open by ADR-005).
+//
+// The caller is not blocked waiting to find out whether the message was
+// routed — same grava-depois-publica principle as before: this returns nil
+// as soon as the publish itself succeeds, and a late "unroutable" return
+// from the broker is watched for and logged in the background.
 func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedEvent) error {
 	channel, err := p.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("order: failed to open channel to publish order created event: %w", err)
 	}
-	defer channel.Close()
+
+	returns := channel.NotifyReturn(make(chan amqp.Return, 1))
 
 	body, err := json.Marshal(event)
 	if err != nil {
+		channel.Close()
 		return fmt.Errorf("order: failed to marshal order created event: %w", err)
 	}
 
@@ -122,7 +132,7 @@ func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedE
 		ctx,
 		EventsExchange,
 		CreatedRoutingKey,
-		false,
+		true,
 		false,
 		amqp.Publishing{
 			ContentType:  "application/json",
@@ -131,7 +141,24 @@ func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedE
 		},
 	)
 	if err != nil {
+		channel.Close()
 		return fmt.Errorf("order: failed to publish order created event: %w", err)
 	}
+
+	go awaitReturn(channel, returns, event.OrderID)
+
 	return nil
+}
+
+// awaitReturn waits briefly for the broker to report this specific publish
+// as unroutable. It owns channel from this point on, and is responsible for
+// closing it once it's done waiting.
+func awaitReturn(channel *amqp.Channel, returns <-chan amqp.Return, orderID uuid.UUID) {
+	defer channel.Close()
+	select {
+	case returned := <-returns:
+		log.Printf("order: order created event for %s was not routed: code=%d reason=%q", orderID, returned.ReplyCode, returned.ReplyText)
+	case <-time.After(1 * time.Second):
+		// No return within the window: the message was routed successfully.
+	}
 }

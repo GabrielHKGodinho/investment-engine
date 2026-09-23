@@ -388,3 +388,35 @@ inspect and nothing to replay.
   until real execution exists.
 - Changing the queue arguments requires deleting the queue.
 - Nothing alerts on a growing DLQ, so it goes unnoticed until someone looks.
+
+# ADR-010: Execution consumer does not yet distinguish transient from permanent failures
+
+## Status
+Accepted (known limitation)
+
+## Context
+The execution consumer rejects every handling error the same way: `Reject(false)`,
+sending the message straight to the dead-letter queue (see ADR-009). This was a
+reasonable default when the only possible failures were malformed or invalid events —
+genuinely permanent errors that retrying would never fix.
+
+Now that order execution depends on a real external call (the PriceService gRPC
+client), a new class of failure exists: transient infrastructure errors (e.g. the
+PriceService being temporarily unreachable) that would very likely succeed on retry.
+Today, that class is treated identically to a permanent error: the order is left
+PENDING forever, its event sits unprocessed in the DLQ, and nothing surfaces this to
+an operator or to the client who placed the order.
+
+## Decision
+Ship today's integration with this known gap, rather than block on solving it. Retry
+with backoff for transient errors (distinguishing them from permanent ones, likely by
+gRPC status code) is deferred to a follow-up.
+
+## Consequences
+- An order can silently become unrecoverable if a dependency is down at the moment
+  its event is processed.
+- The DLQ currently mixes two different failure classes with no way to tell them
+  apart without inspecting the error that was logged at reject time.
+- Follow-up: classify errors as retryable vs. not: retry transient ones (e.g.
+  `codes.Unavailable`) with backoff before giving up; reserve `Reject(false)` for
+  errors that are genuinely permanent.

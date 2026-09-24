@@ -3,6 +3,7 @@ package pagination
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -36,6 +37,10 @@ func DecodeCursor(token string) (Cursor, error) {
 	var c Cursor
 	if err := json.Unmarshal(data, &c); err != nil {
 		return Cursor{}, fmt.Errorf("decode cursor: invalid payload: %w", err)
+	}
+	// NEW: a well-formed JSON can still carry no position at all ({} or null).
+	if c.CreatedAt.IsZero() || c.ID == uuid.Nil {
+		return Cursor{}, errors.New("decode cursor: invalid payload: createdAt and id are required")
 	}
 	return c, nil
 }

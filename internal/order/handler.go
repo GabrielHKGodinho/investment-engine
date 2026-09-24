@@ -1,6 +1,7 @@
 package order
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -36,12 +37,19 @@ type ListOrdersResponse struct {
 	HasMore    bool            `json:"hasMore"`
 }
 
-type Handler struct {
-	store     OrderStore
-	publisher *Publisher
+// EventPublisher is what the Handler needs to announce that an order was
+// created. It is declared here, next to its only user, so the handler does
+// not depend on RabbitMQ: *Publisher satisfies it implicitly.
+type EventPublisher interface {
+	PublishOrderCreated(ctx context.Context, event OrderCreatedEvent) error
 }
 
-func NewHandler(store OrderStore, publisher *Publisher) *Handler {
+type Handler struct {
+	store     OrderStore
+	publisher EventPublisher
+}
+
+func NewHandler(store OrderStore, publisher EventPublisher) *Handler {
 	return &Handler{store: store, publisher: publisher}
 }
 
@@ -189,7 +197,8 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	var fieldErrors []apierror.FieldError
 
-	if strings.TrimSpace(req.AssetSymbol) == "" {
+	assetSymbol := strings.ToUpper(strings.TrimSpace(req.AssetSymbol))
+	if assetSymbol == "" {
 		fieldErrors = append(fieldErrors, apierror.FieldError{Field: "assetSymbol", Message: "is required"})
 	}
 	if req.Quantity <= 0 {
@@ -218,7 +227,7 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	order := Order{
 		ID:            uuid.New(),
 		UserID:        userID,
-		AssetSymbol:   req.AssetSymbol,
+		AssetSymbol:   assetSymbol,
 		Quantity:      req.Quantity,
 		Side:          side,
 		ExecutionType: executionType,

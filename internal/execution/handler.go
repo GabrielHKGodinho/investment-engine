@@ -34,7 +34,7 @@ func handleOrderCreated(ctx context.Context, store ExecutionStore, prices PriceG
 	}
 
 	if err := event.Validate(); err != nil {
-		return fmt.Errorf("execution: invalid order created event: %w", err)
+		return fmt.Errorf("%w: %w", errInvalidEvent, err)
 	}
 
 	return processOrderCreated(ctx, store, prices, event)
@@ -43,7 +43,7 @@ func handleOrderCreated(ctx context.Context, store ExecutionStore, prices PriceG
 func decodeOrderCreated(body []byte) (order.OrderCreatedEvent, error) {
 	var event order.OrderCreatedEvent
 	if err := json.Unmarshal(body, &event); err != nil {
-		return order.OrderCreatedEvent{}, fmt.Errorf("execution: failed to decode order created event: %w", err)
+		return order.OrderCreatedEvent{}, fmt.Errorf("%w: failed to decode: %w", errInvalidEvent, err)
 	}
 	return event, nil
 }

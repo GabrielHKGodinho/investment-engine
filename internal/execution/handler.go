@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -54,7 +54,7 @@ func decodeOrderCreated(body []byte) (order.OrderCreatedEvent, error) {
 // that finds the order PENDING performs the transition and records the
 // effect, so a duplicate delivery is skipped without side effects.
 func processOrderCreated(ctx context.Context, store ExecutionStore, prices PriceGetter, event order.OrderCreatedEvent) error {
-	log.Printf("executing order %s: %s %d x %s", event.OrderID, event.Side, event.Quantity, event.AssetSymbol)
+	slog.Info("executing order", "order_id", event.OrderID, "side", event.Side, "quantity", event.Quantity, "asset_symbol", event.AssetSymbol)
 
 	price, err := prices.GetPrice(ctx, event.AssetSymbol)
 	if err != nil {
@@ -66,10 +66,10 @@ func processOrderCreated(ctx context.Context, store ExecutionStore, prices Price
 		return fmt.Errorf("execution: failed to execute order %s: %w", event.OrderID, err)
 	}
 	if !executed {
-		log.Printf("order %s is not PENDING anymore, skipping (duplicate delivery or already resolved)", event.OrderID)
+		slog.Info("order is not PENDING anymore, skipping (duplicate delivery or already resolved)", "order_id", event.OrderID)
 		return nil
 	}
 
-	log.Printf("order %s executed at price %.2f", event.OrderID, price)
+	slog.Info("order executed", "order_id", event.OrderID, "price", price)
 	return nil
 }

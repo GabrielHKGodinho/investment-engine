@@ -3,7 +3,7 @@ package order
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,6 +141,7 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 
 	orders, nextCursor, err := h.store.List(r.Context(), filter)
 	if err != nil {
+		slog.Error("failed to list orders", "error", err.Error(), "userID", userID)
 		apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal error", nil)
 		return
 	}
@@ -164,6 +165,7 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	if nextCursor != nil {
 		token, err := pagination.EncodeCursor(*nextCursor)
 		if err != nil {
+			slog.Error("failed to encode next cursor", "error", err.Error(), "userID", userID)
 			apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal error", nil)
 			return
 		}
@@ -237,13 +239,14 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.store.Create(r.Context(), order)
 	if err != nil {
+		slog.Error("failed to create order", "error", err.Error(), "userID", userID, "assetSymbol", assetSymbol)
 		apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal error", nil)
 		return
 	}
 
 	event := NewOrderCreatedEvent(created)
 	if err := h.publisher.PublishOrderCreated(r.Context(), event); err != nil {
-		log.Printf("failed to publish order created event for order %s: %v", created.ID, err)
+		slog.Warn("failed to publish order created event", "error", err.Error(), "orderID", created.ID.String())
 		// The order was persisted successfully — that's what "created" means to
 		// the client. The event failing to publish is a real problem, but not
 		// one that should make this request look like it failed entirely.

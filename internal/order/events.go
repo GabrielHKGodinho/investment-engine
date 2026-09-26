@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -157,7 +157,7 @@ func awaitReturn(channel *amqp.Channel, returns <-chan amqp.Return, orderID uuid
 	defer channel.Close()
 	select {
 	case returned := <-returns:
-		log.Printf("order: order created event for %s was not routed: code=%d reason=%q", orderID, returned.ReplyCode, returned.ReplyText)
+		slog.Warn("order created event was not routed", "order_id", orderID, "code", returned.ReplyCode, "reason", returned.ReplyText)
 	case <-time.After(1 * time.Second):
 		// No return within the window: the message was routed successfully.
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
@@ -69,7 +69,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("shutdown requested: not taking new deliveries")
+			slog.Info("shutdown requested: not taking new deliveries")
 			return nil
 
 		case delivery, ok := <-deliveries:
@@ -81,11 +81,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// When both cases are ready, select picks one at random, so re-check.
 			if ctx.Err() != nil {
 				// Left unacked on purpose: RabbitMQ requeues it when the channel closes.
-				log.Println("shutdown requested: leaving a received delivery unacked, it returns to the queue")
+				slog.Info("shutdown requested: leaving a received delivery unacked, it returns to the queue")
 				return nil
 			}
 
-			log.Printf("received delivery: redelivered=%t", delivery.Redelivered)
+			slog.Debug("received delivery", "redelivered", delivery.Redelivered, "delivery_tag", delivery.DeliveryTag)
 
 			// ctx is the shutdown signal: it means "stop taking new work", not
 			// "abort what is in progress" (ADR-007). The handler gets its own
@@ -95,9 +95,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 			cancel() // not deferred: a defer inside this loop would only run when Run returns
 
 			if handleErr != nil {
-				log.Printf("failed to handle delivery, rejecting without requeue: %v", handleErr)
+				slog.Error("failed to handle delivery, rejecting without requeue", "error", handleErr, "delivery_tag", delivery.DeliveryTag)
 				if err := delivery.Reject(false); err != nil {
-					log.Printf("failed to reject delivery: %v", err)
+					slog.Error("failed to reject delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
 				}
 				continue
 			}
@@ -105,7 +105,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// Ack only AFTER handling: a crash mid-processing leaves the delivery
 			// unacked, so RabbitMQ redelivers it.
 			if err := delivery.Ack(false); err != nil {
-				log.Printf("failed to ack delivery: %v", err)
+				slog.Error("failed to ack delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
 			}
 		}
 	}

@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/GabrielHKGodinho/investment-engine/internal/logging"
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
@@ -26,12 +27,14 @@ const (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("api stopped with error: %v", err)
+		slog.Error("api stopped", "error", err.Error())
+		os.Exit(1)
 	}
-	log.Println("api stopped")
+	slog.Info("api stopped")
 }
 
 func run() error {
+	slog.SetDefault(logging.New("api"))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -48,7 +51,7 @@ func run() error {
 		return fmt.Errorf("api: database setup: %w", err)
 	}
 	defer db.Close()
-	log.Println("connected to database")
+	slog.Info("connected to database")
 
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
@@ -59,7 +62,7 @@ func run() error {
 		return fmt.Errorf("api: rabbitmq setup: %w", err)
 	}
 	defer conn.Close()
-	log.Println("connected to rabbitmq")
+	slog.Info("connected to rabbitmq")
 
 	setupChannel, err := conn.Channel()
 	if err != nil {
@@ -87,7 +90,7 @@ func run() error {
 
 	serverErr := make(chan error, 1) // buffered: the goroutine can always send and exit
 	go func() {
-		log.Printf("api listening on %s", listenAddr)
+		slog.Info("api listening", "addr", listenAddr)
 		serverErr <- srv.ListenAndServe()
 	}()
 
@@ -96,7 +99,7 @@ func run() error {
 		// The server failed by itself (e.g. port already in use).
 		return fmt.Errorf("api: server failed: %w", err)
 	case <-ctx.Done():
-		log.Println("shutdown requested: draining in-flight requests")
+		slog.Info("shutdown requested: draining in-flight requests")
 	}
 
 	// ctx is already canceled at this point, so it can't be the parent here.

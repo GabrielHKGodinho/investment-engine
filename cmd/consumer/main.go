@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/execution"
+	"github.com/GabrielHKGodinho/investment-engine/internal/logging"
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/priceservice"
@@ -19,18 +20,20 @@ import (
 func main() {
 	err := run()
 	if err != nil {
-		log.Fatalf("consumer stopped with error: %v", err)
+		slog.Error("consumer stopped", "error", err.Error())
+		os.Exit(1)
 	}
-	log.Println("consumer stopped")
+	slog.Info("consumer stopped")
 }
 
 func run() error {
+	slog.SetDefault(logging.New("consumer"))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	context.AfterFunc(ctx, stop)
 
-	log.Println("consumer starting")
+	slog.Info("consumer starting")
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -41,7 +44,7 @@ func run() error {
 		return fmt.Errorf("consumer: database setup: %w", err)
 	}
 	defer db.Close()
-	log.Println("connected to database")
+	slog.Info("connected to database")
 
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
@@ -52,7 +55,7 @@ func run() error {
 		return fmt.Errorf("consumer failed to dial: %w", err)
 	}
 	defer conn.Close()
-	log.Println("connected to rabbitmq")
+	slog.Info("connected to rabbitmq")
 
 	priceServiceAddr := os.Getenv("PRICE_SERVICE_ADDR")
 	if priceServiceAddr == "" {
@@ -63,7 +66,7 @@ func run() error {
 		return fmt.Errorf("consumer: price service client setup: %w", err)
 	}
 	defer priceClient.Close()
-	log.Println("price service client ready")
+	slog.Info("price service client ready")
 
 	store := order.NewPostgresOrderStore(db)
 	consumer := execution.NewConsumer(conn, store, priceClient)

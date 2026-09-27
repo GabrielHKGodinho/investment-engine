@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/GabrielHKGodinho/investment-engine/internal/metrics"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
 
@@ -91,19 +92,21 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// "abort what is in progress" (ADR-007). The handler gets its own
 			// context, detached from the signal, with a timeout.
 			handleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handleTimeout)
+			start := time.Now()
 			handleErr := handleOrderCreated(handleCtx, c.store, c.prices, delivery.Body)
-			cancel() // not deferred: a defer inside this loop would only run when Run returns
+			cancel()
+			metrics.MessageProcessingDuration.Observe(time.Since(start).Seconds())
 
 			if handleErr != nil {
+				metrics.MessagesProcessedTotal.WithLabelValues(classifyFailure(handleErr).String()).Inc()
 				slog.Error("failed to handle delivery, rejecting without requeue", "error", handleErr, "delivery_tag", delivery.DeliveryTag)
 				if err := delivery.Reject(false); err != nil {
 					slog.Error("failed to reject delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
 				}
 				continue
 			}
+			metrics.MessagesProcessedTotal.WithLabelValues("success").Inc()
 
-			// Ack only AFTER handling: a crash mid-processing leaves the delivery
-			// unacked, so RabbitMQ redelivers it.
 			if err := delivery.Ack(false); err != nil {
 				slog.Error("failed to ack delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
 			}

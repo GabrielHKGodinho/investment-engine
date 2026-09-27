@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/priceservice"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -67,6 +69,14 @@ func run() error {
 	}
 	defer priceClient.Close()
 	slog.Info("price service client ready")
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", promhttp.Handler())
+		if err := http.ListenAndServe(":9101", mux); err != nil {
+			slog.Error("metrics server failed", "error", err.Error())
+		}
+	}()
 
 	store := order.NewPostgresOrderStore(db)
 	consumer := execution.NewConsumer(conn, store, priceClient)

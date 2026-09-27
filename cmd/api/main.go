@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/logging"
+	"github.com/GabrielHKGodinho/investment-engine/internal/metrics"
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -81,11 +83,12 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders", handler.ListOrders)
 	mux.HandleFunc("POST /orders", handler.CreateOrder)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	srv := &http.Server{
 		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second, // max time to read request headers
+		Handler:           metrics.Middleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	serverErr := make(chan error, 1) // buffered: the goroutine can always send and exit

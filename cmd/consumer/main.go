@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/execution"
 	"github.com/GabrielHKGodinho/investment-engine/internal/logging"
@@ -16,6 +17,7 @@ import (
 	"github.com/GabrielHKGodinho/investment-engine/internal/postgres"
 	"github.com/GabrielHKGodinho/investment-engine/internal/priceservice"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
+	"github.com/GabrielHKGodinho/investment-engine/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -36,6 +38,19 @@ func run() error {
 	context.AfterFunc(ctx, stop)
 
 	slog.Info("consumer starting")
+
+	shutdownTracing, err := telemetry.Init(ctx, "consumer")
+	if err != nil {
+		return fmt.Errorf("consumer: telemetry setup: %w", err)
+	}
+	defer func() {
+		// ctx is already canceled when shutdown starts, so flush with a fresh one.
+		flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err.Error())
+		}
+	}()
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

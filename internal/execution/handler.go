@@ -7,6 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/order"
 )
@@ -55,6 +57,7 @@ func decodeOrderCreated(body []byte) (order.OrderCreatedEvent, error) {
 // effect, so a duplicate delivery is skipped without side effects.
 func processOrderCreated(ctx context.Context, store ExecutionStore, prices PriceGetter, event order.OrderCreatedEvent) error {
 	slog.Info("executing order", "order_id", event.OrderID, "side", event.Side, "quantity", event.Quantity, "asset_symbol", event.AssetSymbol)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("order.id", event.OrderID.String()))
 
 	price, err := prices.GetPrice(ctx, event.AssetSymbol)
 	if err != nil {

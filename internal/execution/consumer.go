@@ -9,7 +9,13 @@ import (
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/metrics"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("github.com/GabrielHKGodinho/investment-engine/internal/execution")
 
 // prefetchCount is how many unacknowledged deliveries RabbitMQ may keep in
 // flight on the channel. The consumer handles one delivery at a time, so a
@@ -92,9 +98,28 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// "abort what is in progress" (ADR-007). The handler gets its own
 			// context, detached from the signal, with a timeout.
 			handleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handleTimeout)
+			handleCtx = rabbitmq.ExtractTraceContext(handleCtx, delivery.Headers)
+			handleCtx, span := tracer.Start(
+				handleCtx,
+				OrderQueue+" process",
+				trace.WithSpanKind(trace.SpanKindConsumer),
+				trace.WithAttributes(
+					attribute.String("messaging.system", "rabbitmq"),
+					attribute.String("messaging.destination.name", OrderQueue),
+					attribute.Bool("messaging.rabbitmq.message.redelivered", delivery.Redelivered),
+				),
+			)
+
 			start := time.Now()
 			handleErr := handleOrderCreated(handleCtx, c.store, c.prices, delivery.Body)
 			cancel()
+
+			if handleErr != nil {
+				span.RecordError(handleErr)
+				span.SetStatus(codes.Error, handleErr.Error())
+			}
+			span.End()
+
 			metrics.MessageProcessingDuration.Observe(time.Since(start).Seconds())
 
 			if handleErr != nil {

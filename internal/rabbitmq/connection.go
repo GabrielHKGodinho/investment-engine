@@ -1,4 +1,3 @@
-// internal/rabbitmq/connection.go
 package rabbitmq
 
 import (

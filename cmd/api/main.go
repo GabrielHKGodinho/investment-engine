@@ -18,6 +18,7 @@ import (
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 	"github.com/GabrielHKGodinho/investment-engine/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -100,8 +101,17 @@ func run() error {
 	mux.Handle("GET /metrics", promhttp.Handler())
 
 	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           metrics.Middleware(mux),
+		Addr: listenAddr,
+		Handler: otelhttp.NewHandler(metrics.Middleware(mux), "api",
+			// Prometheus scrapes /metrics on a timer: tracing it would flood
+			// the span queue with noise traces.
+			otelhttp.WithFilter(func(r *http.Request) bool {
+				return r.URL.Path != "/metrics"
+			}),
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return r.Method + " " + r.URL.Path
+			}),
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

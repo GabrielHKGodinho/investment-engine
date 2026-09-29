@@ -10,9 +10,15 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
 )
+
+var tracer = otel.Tracer("github.com/GabrielHKGodinho/investment-engine/internal/order")
 
 const (
 	// EventsExchange is the RabbitMQ exchange the order domain publishes
@@ -114,7 +120,26 @@ func NewPublisher(conn *rabbitmq.Connection) *Publisher {
 // routed — same grava-depois-publica principle as before: this returns nil
 // as soon as the publish itself succeeds, and a late "unroutable" return
 // from the broker is watched for and logged in the background.
-func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedEvent) error {
+func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedEvent) (err error) {
+	ctx, span := tracer.Start(
+		ctx,
+		EventsExchange+" publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", EventsExchange),
+			attribute.String("messaging.rabbitmq.destination.routing_key", CreatedRoutingKey),
+			attribute.String("order.id", event.OrderID.String()),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	channel, err := p.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("order: failed to open channel to publish order created event: %w", err)
@@ -128,6 +153,9 @@ func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedE
 		return fmt.Errorf("order: failed to marshal order created event: %w", err)
 	}
 
+	headers := amqp.Table{}
+	rabbitmq.InjectTraceContext(ctx, headers)
+
 	err = channel.PublishWithContext(
 		ctx,
 		EventsExchange,
@@ -135,6 +163,7 @@ func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedE
 		true,
 		false,
 		amqp.Publishing{
+			Headers:      headers,
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
 			Body:         body,

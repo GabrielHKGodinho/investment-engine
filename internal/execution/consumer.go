@@ -9,6 +9,7 @@ import (
 
 	"github.com/GabrielHKGodinho/investment-engine/internal/metrics"
 	"github.com/GabrielHKGodinho/investment-engine/internal/rabbitmq"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -123,13 +124,62 @@ func (c *Consumer) Run(ctx context.Context) error {
 			metrics.MessageProcessingDuration.Observe(time.Since(start).Seconds())
 
 			if handleErr != nil {
-				metrics.MessagesProcessedTotal.WithLabelValues(classifyFailure(handleErr).String()).Inc()
-				slog.Error("failed to handle delivery, rejecting without requeue", "error", handleErr, "delivery_tag", delivery.DeliveryTag)
-				if err := delivery.Reject(false); err != nil {
-					slog.Error("failed to reject delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
+				failure := classifyFailure(handleErr)
+				metrics.MessagesProcessedTotal.WithLabelValues(failure.String()).Inc()
+
+				// attempt is how many times this message has already failed (0 on its
+				// very first failure). This failure is attempt+1; if that already
+				// reaches maxDeliveryAttempts, there is no next try left to schedule.
+				attempt := retryAttempt(delivery.Headers)
+				outOfRetries := attempt+1 >= maxDeliveryAttempts
+
+				if failure == permanentFailure || outOfRetries {
+					slog.Error("failed to handle delivery, rejecting without requeue",
+						"error", handleErr, "delivery_tag", delivery.DeliveryTag,
+						"failure", failure.String(), "attempt", attempt+1)
+					if err := delivery.Reject(false); err != nil {
+						slog.Error("failed to reject delivery", "error", err, "delivery_tag", delivery.DeliveryTag)
+					}
+					continue
+				}
+
+				// Copy the headers into a fresh map before mutating: delivery.Headers
+				// is the original delivery's own map, and writing into it in place
+				// would silently change what the original delivery carries.
+				retryHeaders := amqp.Table{}
+				for k, v := range delivery.Headers {
+					retryHeaders[k] = v
+				}
+				retryHeaders[retryCountHeader] = attempt + 1
+
+				retryMsg := amqp.Publishing{
+					Headers:      retryHeaders,
+					ContentType:  "application/json",
+					DeliveryMode: amqp.Persistent,
+					Body:         delivery.Body,
+				}
+
+				// Publish the retry copy BEFORE acking the original: if the ack came
+				// first and this publish then failed, the original would already be
+				// gone from OrderQueue with no copy anywhere — the message would be
+				// lost, not just delayed.
+				if err := channel.PublishWithContext(ctx, "", RetryQueue, true, false, retryMsg); err != nil {
+					slog.Error("failed to send delivery to retry queue, requeueing original instead",
+						"error", err, "delivery_tag", delivery.DeliveryTag)
+					if err := delivery.Reject(true); err != nil {
+						slog.Error("failed to requeue delivery after retry publish failure", "error", err, "delivery_tag", delivery.DeliveryTag)
+					}
+					continue
+				}
+
+				slog.Error("failed to handle delivery, sent a copy to retry queue",
+					"error", handleErr, "delivery_tag", delivery.DeliveryTag, "attempt", attempt+1)
+				if err := delivery.Ack(false); err != nil {
+					slog.Error("failed to ack delivery after retry publish succeeded", "error", err, "delivery_tag", delivery.DeliveryTag)
 				}
 				continue
 			}
+
 			metrics.MessagesProcessedTotal.WithLabelValues("success").Inc()
 
 			if err := delivery.Ack(false); err != nil {
@@ -137,4 +187,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// retryAttempt reads how many times this delivery has already failed.
+// Absent or unexpected header value means this is the first attempt (0).
+// A value written by this same code always arrives back as int32 — that
+// is how amqp091-go decodes the wire's 32-bit integer tag on redelivery.
+func retryAttempt(headers amqp.Table) int {
+	if val, ok := headers[retryCountHeader]; ok {
+		if n, ok := val.(int32); ok {
+			return int(n)
+		}
+	}
+	return 0
 }

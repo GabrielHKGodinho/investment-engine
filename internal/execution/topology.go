@@ -2,6 +2,7 @@ package execution
 
 import (
 	"fmt"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -21,6 +22,25 @@ const (
 	DeadLetterQueue = "order_execution.dlq"
 
 	deadLetterRoutingKey = "order_execution.dlq"
+
+	// RetryQueue holds transient failures for retryDelay before RabbitMQ
+	// dead-letters them back into OrderQueue by name (dead-lettering with
+	// an empty exchange name routes by queue name — no exchange needed).
+	// No consumer ever attaches here; it exists only as a delay buffer.
+	RetryQueue = "order_execution.retry"
+
+	// retryDelay is how long a transient failure waits before its next
+	// attempt. Fixed delay, not exponential backoff — the simplest thing
+	// that gives a dependency room to recover.
+	retryDelay = 5 * time.Second
+
+	// maxDeliveryAttempts bounds how many times a transient failure is
+	// retried before it is treated like a permanent one.
+	maxDeliveryAttempts = 3
+
+	// retryCountHeader tracks attempts across retry hops. Absent means
+	// attempt 1; the consumer sets and increments it on each requeue.
+	retryCountHeader = "x-retry-count"
 )
 
 // SetupTopology declares everything the execution consumer depends on: the
@@ -62,6 +82,15 @@ func SetupTopology(channel *amqp.Channel) error {
 	}
 	if err := rabbitmq.DeclareDurableQueue(channel, OrderQueue, orderQueueArguments); err != nil {
 		return fmt.Errorf("execution: failed to declare order queue: %w", err)
+	}
+
+	retryQueueArguments := amqp.Table{
+		"x-dead-letter-exchange":    "", // default exchange: routes by queue name
+		"x-dead-letter-routing-key": OrderQueue,
+		"x-message-ttl":             int32(retryDelay / time.Millisecond),
+	}
+	if err := rabbitmq.DeclareDurableQueue(channel, RetryQueue, retryQueueArguments); err != nil {
+		return fmt.Errorf("execution: failed to declare retry queue: %w", err)
 	}
 
 	if err := rabbitmq.BindQueue(channel, OrderQueue, order.EventsExchange, order.CreatedRoutingKey); err != nil {

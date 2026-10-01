@@ -1,0 +1,20 @@
+# Version control and local tooling
+.git
+.vscode
+.idea
+
+# Local build outputs and test artifacts
+bin/
+*.out
+coverage.*
+*.test
+order.json
+*.excalidraw
+*.sql
+
+# Secrets — must never reach any image layer
+.env
+
+# Docker files themselves are not needed inside the build
+Dockerfile
+.dockerignore

@@ -420,3 +420,59 @@ gRPC status code) is deferred to a follow-up.
 - Follow-up: classify errors as retryable vs. not: retry transient ones (e.g.
   `codes.Unavailable`) with backoff before giving up; reserve `Reject(false)` for
   errors that are genuinely permanent.
+
+
+# ADR-011: Multi-stage Docker build with distroless runtime images
+
+## Status
+Accepted
+
+## Context
+The three binaries (api, consumer, priceservice) must run as containers, both
+for the docker-compose setup and for deployment on a platform that only runs
+images. A single-stage image built from `golang:1.25` would ship the whole
+toolchain, a full Debian userland, the source code and Go's caches: the build
+stage alone measures 326 MB compressed, while the binaries are 15-21 MB.
+Every deploy pulls the image, and everything inside it widens the attack
+surface and the CVE report.
+
+The binaries need almost nothing from the filesystem: they are pure Go (pgx,
+amqp091-go, grpc, otel and prometheus use no cgo), make no outbound TLS calls
+today and load no time zones. A managed database or broker in production will
+likely require TLS, though, which needs CA certificates.
+
+## Decision
+- One Dockerfile with a `build` stage (`golang:1.25`) and one runtime stage
+  per binary, selected with `--target api|consumer|priceservice`.
+- Binaries are built with `CGO_ENABLED=0` set explicitly (Go's default turns
+  cgo on whenever a C compiler is present, which would produce a dynamic
+  binary that fails at startup on a libc-less image), plus `-trimpath` and
+  `-ldflags="-s -w"` (about 30% smaller; panic stack traces keep function
+  names and line numbers).
+- `go.mod`/`go.sum` are copied and downloaded before the source, and BuildKit
+  cache mounts keep the module and build caches across builds without writing
+  them into any layer.
+- Runtime base: `gcr.io/distroless/static-debian13:nonroot`. Not `scratch`:
+  for about 6 MB uncompressed it adds CA certificates, tzdata and a non-root
+  user that would otherwise be copied by hand. Not Alpine: its shell and
+  package manager are never used by a static binary. `USER 65532:65532` is
+  numeric so platforms that enforce non-root can verify it.
+- `ENTRYPOINT` uses exec form, so the binary runs as PID 1 and receives
+  SIGTERM directly (required by ADR-007). The shell form would not even start
+  on distroless, which has no `/bin/sh`.
+- A `.dockerignore` keeps `.git`, local build output and `.env` out of the
+  build context.
+
+## Consequences
+- Gained: runtime images of 6.7-8.3 MB compressed (api: 8.3 MB, against
+  326 MB for the build stage); no shell, package manager or compiler in
+  production images; non-root by default.
+- Cost: there is no shell to `docker exec` into, so debugging relies on logs,
+  metrics and traces. The `:debug` distroless tag is for local use only.
+- Verified with `docker stop`: the api drains and exits with code 0 in about
+  0.3s. The priceservice has no signal handling yet: as PID 1 the Go runtime
+  exits it with code 2 and skips its deferred cleanup, so buffered spans are
+  lost and every stop looks like a crash. Adding graceful shutdown to it is a
+  follow-up.
+- A plain `docker build .` without `--target` produces the last stage
+  (priceservice), so builds must always name the target.

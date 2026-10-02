@@ -1,0 +1,107 @@
+# Local development environment for investment-engine.
+# Credentials here are for local use only — never reuse them anywhere else.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: engine
+      POSTGRES_PASSWORD: engine
+      POSTGRES_DB: investment_engine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init scripts run only when the data volume is empty
+      # (first start, or after `docker compose down -v`).
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      # For psql/IDE and `go run`/`go test` on the host.
+      # Containers on the compose network use postgres:5432 instead.
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check. During first-time init the image runs a
+      # temporary server that only accepts local socket connections; a socket-based
+      # check would report "ready" before the real server is listening on the network.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U engine -d investment_engine"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    # RabbitMQ keeps its data under the node name (rabbit@<hostname>).
+    # A fixed hostname keeps durable queues and messages across re-creation.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: engine
+      RABBITMQ_DEFAULT_PASS: engine
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"     # AMQP, for `go run`/`go test` on the host
+      - "127.0.0.1:15672:15672"   # management UI
+    healthcheck:
+      # Healthy only once the AMQP listener accepts connections,
+      # not just when the Erlang node is up.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    ports:
+      - "127.0.0.1:16686:16686"   # UI
+      - "127.0.0.1:4318:4318"     # OTLP/HTTP, for `go run` on the host
+
+  priceservice:
+    build:
+      context: .
+      target: priceservice
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports:
+      # gRPC, for grpcurl on the host. Metrics on 9102 stay internal.
+      - "127.0.0.1:50051:50051"
+    restart: on-failure
+
+  consumer:
+    build:
+      context: .
+      target: consumer
+    environment:
+      DATABASE_URL: postgres://engine:engine@postgres:5432/investment_engine?sslmode=disable
+      RABBITMQ_URL: amqp://engine:engine@rabbitmq:5672/
+      PRICE_SERVICE_ADDR: priceservice:50051
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    # No published ports: metrics on 9101 are reachable only on the compose network.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # Safety net for failures after startup (there is no reconnection logic yet).
+    restart: on-failure
+
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      DATABASE_URL: postgres://engine:engine@postgres:5432/investment_engine?sslmode=disable
+      RABBITMQ_URL: amqp://engine:engine@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports:
+      # REST API and its /metrics endpoint.
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgdata:
+  rabbitmqdata:

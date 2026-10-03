@@ -1,5 +1,7 @@
 # investment-engine
 
+[![CI](https://github.com/GabrielHKGodinho/investment-engine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GabrielHKGodinho/investment-engine/actions/workflows/ci.yml)
+
 Order execution engine in Go. A REST API accepts orders and publishes an event
 to RabbitMQ; a consumer executes each order against a price from an internal
 gRPC service and records the result in PostgreSQL. All three services export

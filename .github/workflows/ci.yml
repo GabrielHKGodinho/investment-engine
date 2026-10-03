@@ -1,0 +1,58 @@
+# Continuous integration: every push, on any branch, must keep the module
+# tidy, formatted, vet-clean, buildable and passing its tests.
+name: CI
+
+on: push
+
+# This workflow only reads the repository, so the automatic GITHUB_TOKEN
+# gets nothing beyond read access.
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Verify, build and test
+    runs-on: ubuntu-latest
+    # The default job limit is 6 hours; a deadlocked test must not burn that.
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          # go.mod is the single source of truth for the Go version.
+          go-version-file: go.mod
+          # setup-go v6+ keys the module cache on go.mod by default;
+          # go.sum fingerprints the exact dependency contents.
+          cache-dependency-path: go.sum
+
+      - name: Check go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
+      - name: Check formatting
+        # gofmt -l always exits 0, so the step has to fail explicitly,
+        # and it lists the offending files so the log says what to fix.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...

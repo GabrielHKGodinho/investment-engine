@@ -88,6 +88,9 @@ func run() error {
 	defer conn.Close()
 	slog.Info("connected to rabbitmq")
 
+	// Registered right after Dial so that no connection loss goes unnoticed.
+	connClosed := conn.NotifyClose()
+
 	setupChannel, err := conn.Channel()
 	if err != nil {
 		return fmt.Errorf("api: order messaging setup: %w", err)
@@ -139,10 +142,24 @@ func run() error {
 		serverErr <- srv.ListenAndServe()
 	}()
 
+	// stopErr stays nil for a requested shutdown and makes run() fail when the
+	// process stops because a dependency was lost.
+	var stopErr error
+
 	select {
 	case err := <-serverErr:
 		// The server failed by itself (e.g. port already in use).
 		return fmt.Errorf("api: server failed: %w", err)
+	case amqpErr := <-connClosed:
+		// Without the broker every new order would be saved but its event never
+		// published (ADR-007), leaving it PENDING forever. Exiting with an error
+		// lets the platform restart the process, which reconnects on startup.
+		stopErr = errors.New("api: rabbitmq connection lost")
+		if amqpErr != nil {
+			stopErr = fmt.Errorf("api: rabbitmq connection lost: %w", amqpErr)
+		}
+		slog.Error("rabbitmq connection lost: draining in-flight requests before exiting",
+			"error", stopErr.Error())
 	case <-ctx.Done():
 		slog.Info("shutdown requested: draining in-flight requests")
 	}
@@ -157,5 +174,5 @@ func run() error {
 		return fmt.Errorf("api: graceful shutdown failed: %w", err)
 	}
 
-	return nil
+	return stopErr
 }

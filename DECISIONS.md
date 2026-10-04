@@ -476,3 +476,59 @@ likely require TLS, though, which needs CA certificates.
   follow-up.
 - A plain `docker build .` without `--target` produces the last stage
   (priceservice), so builds must always name the target.
+
+# ADR-012: Zero-cost deployment on Railway with free-tier managed backing services
+
+## Status
+Accepted
+
+## Context
+The system needs a public URL to demonstrate during the job search
+(November–December 2026), with no recurring cost. As of October 2026:
+Fly.io no longer gives new accounts a free allowance, only a short trial.
+Render's free instances cover web services only: they sleep after 15 minutes
+without inbound traffic and cannot receive private-network traffic, background
+workers have no free instance, and free PostgreSQL is deleted after 30 days.
+That leaves no free home for the consumer (a worker) or the price service
+(private gRPC). Railway runs any image as a service on a private network, but
+this account's trial had already expired; its Free plan grants $1 of usage per
+month, far below the estimated $3/month for five services including
+PostgreSQL and RabbitMQ.
+
+## Decision
+- Only the three Go services run on Railway (Free plan), deployed from the
+  public GHCR images that CI builds. Only the api has a public domain; the
+  consumer reaches the price service through Railway's private network
+  (`${{priceservice.RAILWAY_PRIVATE_DOMAIN}}`).
+- PostgreSQL runs on Neon's free plan and RabbitMQ on CloudAMQP's free shared
+  plan (Little Lemur), both in AWS us-east-1, over TLS (`sslmode=require`,
+  `amqps://`). Adopting them changed no code: only `DATABASE_URL` and
+  `RABBITMQ_URL` differ from the local setup.
+- On `main`, after the tests pass, CI publishes each image with an immutable
+  commit-SHA tag and a mutable `latest`, then runs `railway redeploy` for each
+  service, which pulls `latest` again. `main` is protected: changes enter
+  through pull requests that must pass CI.
+- The api listens on `PORT`; metrics stay on internal ports. Tracing is
+  opt-in: without `OTEL_EXPORTER_OTLP_ENDPOINT` no exporter
+  is created, and no collector is hosted. Railway collects the JSON logs.
+
+## Consequences
+- Gained: a public URL at no recurring cost, and a concrete case of backing
+  services as attached resources: the broker and the database moved to other
+  providers by configuration alone.
+- Neon suspends the database after 5 minutes without queries. The first
+  request afterwards waits for it to wake (from hundreds of milliseconds to a
+  few seconds). pgx pings a connection idle for over a second before reusing
+  it, so connections closed by the suspension are discarded instead of
+  failing the request.
+- There is no AMQP reconnection. When the connection is lost, the api and the
+  consumer exit with an error and the platform restarts them (crash-only).
+  The Free plan allows only the On Failure policy, capped at 10 restarts, so a
+  broker that drops connections often enough would leave a service down.
+  Reconnection is a follow-up.
+- Free-tier quotas bound the demo: 20 AMQP connections (2 in use), 1M
+  messages per month, 10,000 queued messages, 1 GB of PostgreSQL storage, and
+  $1/month of Railway usage. The API has no authentication or rate limiting,
+  so abuse could exhaust them.
+- What runs is exactly what CI built: the image is never rebuilt by the
+  platform, and the SHA tag identifies the deployed commit.

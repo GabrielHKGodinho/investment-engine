@@ -12,7 +12,9 @@ permissions:
 # A newer push to the same branch makes the older run obsolete.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded runs on branches are cancelled; runs on main never are, so a
+  # publish (and later a deploy) is never killed halfway through.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -58,3 +60,51 @@ jobs:
         # -count=1 disables Go's test result cache: CI must actually run the
         # tests on every push, not replay a result saved by an earlier run.
         run: go test -race -count=1 ./...
+  publish:
+    name: Publish ${{ matrix.service }} image
+    # Runs only after the test job above passed...
+    needs: test
+    # ...and only for pushes to main: branches are verified, never published.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level permissions replace the workflow-level ones entirely, so
+    # contents:read has to be repeated next to packages:write.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api, consumer, priceservice]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: ${{ matrix.service }}
+          platforms: linux/amd64
+          push: true
+          # Registry paths must be lowercase, so the owner name cannot come
+          # from github.repository (GabrielHKGodinho) as-is.
+          tags: |
+            ghcr.io/gabrielhkgodinho/investment-engine-${{ matrix.service }}:latest
+            ghcr.io/gabrielhkgodinho/investment-engine-${{ matrix.service }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max

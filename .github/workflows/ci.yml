@@ -108,3 +108,22 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
+  deploy:
+    name: Deploy to Railway
+    # Waits for all three publish jobs of the matrix to succeed.
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # This job talks only to Railway: the GitHub token gets no permissions.
+    permissions: {}
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Redeploy services
+        # A redeploy pulls :latest again and picks up the image just published.
+        # The price service goes first because the consumer calls it.
+        run: |
+          for service in priceservice consumer api; do
+            npx -y @railway/cli@5 redeploy --service "$service" --yes
+          done

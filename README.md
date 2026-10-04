@@ -4,8 +4,9 @@
 
 Order execution engine in Go. A REST API accepts orders and publishes an event
 to RabbitMQ; a consumer executes each order against a price from an internal
-gRPC service and records the result in PostgreSQL. Locally, all three services export traces to Jaeger; tracing is opt-in and
-stays off in the live deployment.
+gRPC service and records the result in PostgreSQL. Locally, all three services
+export traces to Jaeger; tracing is opt-in and stays off in the live
+deployment.
 
 ## Live demo
 

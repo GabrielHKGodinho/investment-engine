@@ -93,7 +93,7 @@ services:
       RABBITMQ_URL: amqp://engine:engine@rabbitmq:5672/
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
-      # REST API and its /metrics endpoint.
+      # REST API only. Metrics on 9100 stay internal, like 9101/9102.
       - "127.0.0.1:8080:8080"
     depends_on:
       postgres:

@@ -22,7 +22,14 @@ import (
 )
 
 const (
-	listenAddr = ":8080"
+	// defaultPort is used when the platform does not inject PORT, as with
+	// `go run` or docker compose.
+	defaultPort = "8080"
+
+	// metricsAddr serves /metrics on a separate, internal-only listener, as in
+	// the consumer (9101) and the price service (9102): the public port only
+	// exposes the API itself.
+	metricsAddr = ":9100"
 
 	// shutdownTimeout must stay below the platform's grace period
 	// (docker stop waits 10s by default before sending SIGKILL).
@@ -95,19 +102,30 @@ func run() error {
 	publisher := order.NewPublisher(conn)
 	handler := order.NewHandler(store, publisher)
 
+	// Like in the consumer, the metrics server holds no state between scrapes,
+	// so it does not take part in graceful shutdown.
+	go func() {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("GET /metrics", promhttp.Handler())
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			slog.Error("metrics server failed", "error", err.Error())
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders", handler.ListOrders)
 	mux.HandleFunc("POST /orders", handler.CreateOrder)
-	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// Twelve-factor port binding: the platform decides the port.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = defaultPort
+	}
+	listenAddr := ":" + port
 
 	srv := &http.Server{
 		Addr: listenAddr,
 		Handler: otelhttp.NewHandler(metrics.Middleware(mux), "api",
-			// Prometheus scrapes /metrics on a timer: tracing it would flood
-			// the span queue with noise traces.
-			otelhttp.WithFilter(func(r *http.Request) bool {
-				return r.URL.Path != "/metrics"
-			}),
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 				return r.Method + " " + r.URL.Path
 			}),

@@ -37,6 +37,20 @@ func (c *Connection) Close() error {
 	return nil
 }
 
+// NotifyClose returns a channel that reports when the connection closes.
+//
+// If the connection closes unexpectedly (broker restart, network failure),
+// the channel receives the *amqp.Error and is then closed. If it is closed on
+// purpose with Close, the channel is closed without a value, so a receive
+// yields nil.
+//
+// The library sends the error synchronously and blocks until it is read. The
+// buffer of one lets that send complete even when the caller is not receiving
+// at that exact moment, so the library's goroutine never gets stuck.
+func (c *Connection) NotifyClose() <-chan *amqp.Error {
+	return c.conn.NotifyClose(make(chan *amqp.Error, 1))
+}
+
 // DeclareDirectExchange declares a durable, non-auto-deleted direct
 // exchange — the project's standard defaults. Callers only pick the name.
 func DeclareDirectExchange(channel *amqp.Channel, name string) error {

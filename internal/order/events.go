@@ -117,7 +117,7 @@ func NewPublisher(conn *rabbitmq.Connection) *Publisher {
 // no queue is bound to route it (closing the gap left open by ADR-005).
 //
 // The caller is not blocked waiting to find out whether the message was
-// routed — same grava-depois-publica principle as before: this returns nil
+// routed — same write-then-publish principle as before: this returns nil
 // as soon as the publish itself succeeds, and a late "unroutable" return
 // from the broker is watched for and logged in the background.
 func (p *Publisher) PublishOrderCreated(ctx context.Context, event OrderCreatedEvent) (err error) {

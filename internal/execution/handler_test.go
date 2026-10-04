@@ -73,7 +73,7 @@ func TestHandleOrderCreated(t *testing.T) {
 	}{
 		{
 			name:            "malformed json",
-			body:            []byte(`{json invalido}`),
+			body:            []byte(`{invalid json}`),
 			store:           &fakeExecutionStore{},
 			prices:          &fakePriceGetter{},
 			wantErr:         true,

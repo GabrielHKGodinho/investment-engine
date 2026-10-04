@@ -392,7 +392,7 @@ inspect and nothing to replay.
 # ADR-010: Execution consumer does not yet distinguish transient from permanent failures
 
 ## Status
-Accepted (known limitation)
+Superseded by ADR-013 (transient failures are now retried before dead-lettering)
 
 ## Context
 The execution consumer rejects every handling error the same way: `Reject(false)`,
@@ -534,3 +534,53 @@ PostgreSQL and RabbitMQ.
   platform, and the SHA tag identifies the deployed commit.
 - Custom domains are not available on Railway's Free plan, so the demo is
   served from the Railway-provided domain.
+
+# ADR-013: Bounded retries with a fixed delay for transient failures
+
+## Status
+Accepted. Supersedes ADR-010.
+
+## Context
+ADR-010 shipped the price service integration with every handling error
+rejected straight to the dead-letter queue, so a price service that was briefly
+unreachable left orders `PENDING` forever. Failures fall into two classes
+(`classifyFailure` in `internal/execution/failure.go`): permanent ones, which no
+retry can fix (an invalid event, an order that does not exist, gRPC `NotFound`
+or `InvalidArgument`), and transient ones, which are likely to succeed later
+(anything else, such as `Unavailable`).
+
+RabbitMQ has no built-in delayed redelivery: `Reject(true)` puts the message
+back near the head of the queue at once, so a consumer with prefetch 1 would
+retry in a tight loop against a dependency that is still down.
+
+## Decision
+- Permanent failures are rejected without requeue and dead-lettered, as before
+  (ADR-009).
+- A transient failure publishes a copy of the message to
+  `order_execution.retry`: a queue with no consumer and a 5 s queue-level TTL,
+  whose dead-letter target is the default exchange with `order_execution` as
+  routing key. When the TTL expires, RabbitMQ routes the copy back to the work
+  queue by name.
+- The copy carries an `x-retry-count` header. RabbitMQ's own `x-death` header is
+  not used: it describes dead-lettering, and the copy is a new publish.
+- The original delivery is acked only after the copy is published. If that
+  publish fails, the original is requeued instead, so a failure can delay a
+  message but not lose it.
+- After the third failed attempt (`maxDeliveryAttempts = 3`), a transient
+  failure is treated as permanent and dead-lettered.
+
+## Consequences
+- Gained: a dependency that recovers within about 10 s ((3 - 1) waits of 5 s)
+  no longer costs any order, with one extra queue and no plugin.
+- The delay is fixed, not exponential. Exponential backoff would need one queue
+  per delay level or the delayed-message plugin: RabbitMQ only expires messages
+  at the head of a queue, so with per-message TTLs a long delay would hold back
+  shorter ones queued behind it.
+- The tolerance window is shorter than a slow restart or deploy of the price
+  service. Orders that exhaust it still end `PENDING`, in a dead-letter queue
+  with no replay tool and no alert.
+- An attempt that hangs until the handler's 8 s timeout, instead of failing
+  fast, stretches the window.
+- Verified manually by stopping and restarting the price service: Jaeger showed
+  two failed attempts and a successful third, all under the same publish span.
+  There is no automated test for this policy yet.

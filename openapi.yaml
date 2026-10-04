@@ -2,12 +2,18 @@ openapi: 3.0.3
 info:
   title: Investment Engine API
   description: >
-    An event-driven order execution and portfolio management system,
-    built to practice distributed systems patterns in Go.
+    An event-driven order execution service: orders are accepted over REST
+    and executed asynchronously through RabbitMQ, against prices from an
+    internal gRPC service. Only creating and listing orders is exposed.
+    CANCELLED and REJECTED are part of the status contract but are not
+    reached yet.
   version: 1.0.0
 
 servers:
+  - url: https://api-production-594c.up.railway.app
+    description: Public demo (shared, no authentication)
   - url: http://localhost:8080
+    description: Local, via docker compose
 
 paths:
   /orders:

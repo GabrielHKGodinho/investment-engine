@@ -10,6 +10,12 @@ CREATE TABLE orders (
 	created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Serves GET /orders: equality on user_id, then the (created_at, id) cursor
+-- comparison and ORDER BY created_at DESC, id DESC, read as a backward scan.
+-- Without it every page scans the whole table and sorts the matching rows.
+CREATE INDEX IF NOT EXISTS orders_user_id_created_at_id_idx
+	ON orders (user_id, created_at, id);
+
 CREATE TABLE executions (
 	id              UUID PRIMARY KEY,
 	order_id        UUID NOT NULL REFERENCES orders(id),

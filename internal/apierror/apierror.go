@@ -5,8 +5,8 @@ import (
 	"net/http"
 )
 
-// Códigos de erro estáveis — o cliente pode checar isso programaticamente,
-// diferente da mensagem, que pode mudar de texto sem quebrar ninguém.
+// Stable error codes: clients can check them programmatically, unlike the
+// message, whose wording can change without breaking anyone.
 const (
 	CodeValidation   = "VALIDATION_ERROR"
 	CodeUnauthorized = "UNAUTHORIZED"

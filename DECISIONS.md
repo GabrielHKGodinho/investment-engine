@@ -532,3 +532,5 @@ PostgreSQL and RabbitMQ.
   so abuse could exhaust them.
 - What runs is exactly what CI built: the image is never rebuilt by the
   platform, and the SHA tag identifies the deployed commit.
+- Custom domains are not available on Railway's Free plan, so the demo is
+  served from the Railway-provided domain.

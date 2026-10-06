@@ -8,10 +8,11 @@ import (
 // Stable error codes: clients can check them programmatically, unlike the
 // message, whose wording can change without breaking anyone.
 const (
-	CodeValidation   = "VALIDATION_ERROR"
-	CodeUnauthorized = "UNAUTHORIZED"
-	CodeNotFound     = "NOT_FOUND"
-	CodeInternal     = "INTERNAL_ERROR"
+	CodeValidation      = "VALIDATION_ERROR"
+	CodeUnauthorized    = "UNAUTHORIZED"
+	CodeNotFound        = "NOT_FOUND"
+	CodePayloadTooLarge = "PAYLOAD_TOO_LARGE"
+	CodeInternal        = "INTERNAL_ERROR"
 )
 
 type FieldError struct {

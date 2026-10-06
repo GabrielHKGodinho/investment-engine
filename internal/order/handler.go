@@ -3,8 +3,11 @@ package order
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +21,17 @@ import (
 const (
 	defaultLimit = 20
 	maxLimit     = 100
+
+	// maxCreateOrderBodyBytes bounds what CreateOrder reads from a client.
+	// A valid order is about 100 bytes; without a limit the decoder would
+	// keep reading whatever a client chooses to send.
+	maxCreateOrderBodyBytes = 1 << 10 // 1 KiB
 )
+
+// assetSymbolPattern matches the format of B3 tickers: four letters and a
+// one- or two-digit suffix (PETR4, VALE3, BOVA11). It checks the format only:
+// which symbols exist is the price service's knowledge, not the API's.
+var assetSymbolPattern = regexp.MustCompile(`^[A-Z]{4}[0-9]{1,2}$`)
 
 type OrderResponse struct {
 	OrderID       string    `json:"orderID"`
@@ -191,8 +204,16 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxCreateOrderBodyBytes)
+
 	var req CreateOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			apierror.Write(w, http.StatusRequestEntityTooLarge, apierror.CodePayloadTooLarge,
+				fmt.Sprintf("request body must not exceed %d bytes", tooLarge.Limit), nil)
+			return
+		}
 		apierror.Write(w, http.StatusBadRequest, apierror.CodeValidation, "malformed request body", nil)
 		return
 	}
@@ -202,6 +223,8 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	assetSymbol := strings.ToUpper(strings.TrimSpace(req.AssetSymbol))
 	if assetSymbol == "" {
 		fieldErrors = append(fieldErrors, apierror.FieldError{Field: "assetSymbol", Message: "is required"})
+	} else if !assetSymbolPattern.MatchString(assetSymbol) {
+		fieldErrors = append(fieldErrors, apierror.FieldError{Field: "assetSymbol", Message: "must be a B3 ticker such as PETR4 or BOVA11"})
 	}
 	if req.Quantity <= 0 {
 		fieldErrors = append(fieldErrors, apierror.FieldError{Field: "quantity", Message: "must be a positive integer"})

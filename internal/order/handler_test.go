@@ -414,6 +414,26 @@ func TestCreateOrder_Validation(t *testing.T) {
 			wantFields: []string{"assetSymbol"},
 		},
 		{
+			name:       "asset symbol with five letters and no digit suffix",
+			body:       `{"assetSymbol":"HELLO","quantity":10,"side":"BUY","executionType":"MARKET"}`,
+			wantFields: []string{"assetSymbol"},
+		},
+		{
+			name:       "asset symbol without a digit suffix",
+			body:       `{"assetSymbol":"PETR","quantity":10,"side":"BUY","executionType":"MARKET"}`,
+			wantFields: []string{"assetSymbol"},
+		},
+		{
+			name:       "asset symbol with a three-digit suffix",
+			body:       `{"assetSymbol":"PETR123","quantity":10,"side":"BUY","executionType":"MARKET"}`,
+			wantFields: []string{"assetSymbol"},
+		},
+		{
+			name:       "asset symbol with three letters",
+			body:       `{"assetSymbol":"PET4","quantity":10,"side":"BUY","executionType":"MARKET"}`,
+			wantFields: []string{"assetSymbol"},
+		},
+		{
 			name:       "quantity zero",
 			body:       `{"assetSymbol":"PETR4","quantity":0,"side":"BUY","executionType":"MARKET"}`,
 			wantFields: []string{"quantity"},
@@ -492,6 +512,42 @@ func TestCreateOrder_Validation(t *testing.T) {
 				t.Errorf("publisher called %d times, want 0", publisher.calls)
 			}
 		})
+	}
+}
+
+func TestCreateOrder_BodyTooLarge(t *testing.T) {
+	// A valid order padded with whitespace past the limit: whitespace between
+	// JSON tokens is legal, so the decoder only fails because it has to read
+	// beyond maxCreateOrderBodyBytes before the object ends.
+	padding := strings.Repeat(" ", maxCreateOrderBodyBytes)
+	body := `{"assetSymbol":"PETR4",` + padding + `"quantity":10,"side":"BUY","executionType":"MARKET"}`
+
+	store := &fakeOrderStore{}
+	publisher := &fakePublisher{}
+	handler := NewHandler(store, publisher)
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handler.CreateOrder(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+
+	var got errorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("error body is not the expected JSON envelope: %v; body: %s", err, rec.Body.String())
+	}
+	if got.Error.Code != apierror.CodePayloadTooLarge {
+		t.Errorf("error code = %q, want %q", got.Error.Code, apierror.CodePayloadTooLarge)
+	}
+
+	if store.createCalls != 0 {
+		t.Errorf("store.Create called %d times, want 0", store.createCalls)
+	}
+	if publisher.calls != 0 {
+		t.Errorf("publisher called %d times, want 0", publisher.calls)
 	}
 }
 

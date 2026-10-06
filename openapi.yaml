@@ -33,6 +33,11 @@ paths:
               properties:
                 assetSymbol:
                   type: string
+                  description: >
+                    B3 ticker: four letters and a one- or two-digit suffix
+                    (PETR4, BOVA11). Case-insensitive; surrounding spaces are
+                    trimmed. The format is checked here; an unknown but
+                    well-formed symbol is accepted and never executes.
                   example: "PETR4"
                 quantity:
                   type: integer
@@ -62,6 +67,8 @@ paths:
                     enum: [PENDING, EXECUTED, CANCELLED, REJECTED]
         '400':
           description: Invalid request body
+        '413':
+          description: Request body larger than 1 KiB
     get:
       summary: List orders for the authenticated user
       parameters:

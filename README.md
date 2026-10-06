@@ -7,7 +7,8 @@ publishes events to RabbitMQ; a separate consumer executes them asynchronously
 against prices from an internal gRPC service and records the result in
 PostgreSQL. The focus is on what happens when things fail: at-least-once
 delivery with idempotent execution, bounded retries before dead-lettering,
-graceful shutdown, and traces that follow one order across HTTP, AMQP and gRPC.
+graceful shutdown of the API and the consumer, and, when run locally, traces
+that follow one order across HTTP, AMQP and gRPC.
 
 **Live demo:** [list the orders](https://api-production-594c.up.railway.app/orders)
 (JSON in the browser) · [OpenAPI spec](openapi.yaml) · [Architecture decisions](DECISIONS.md)
@@ -25,7 +26,9 @@ curl -X POST https://api-production-594c.up.railway.app/orders \
 curl https://api-production-594c.up.railway.app/orders
 ```
 
-- The price service knows three symbols: `PETR4`, `VALE3` and `ITUB4`.
+- The price service knows three symbols: `PETR4`, `VALE3` and `ITUB4`. The API
+  rejects anything that isn't shaped like a B3 ticker; a well-formed but unknown
+  symbol is accepted and stays `PENDING` (see [Known limitations](#known-limitations)).
 - Execution is asynchronous: list again after a moment to see `PENDING` become
   `EXECUTED`.
 - The database sleeps after 5 idle minutes, so the first request after a pause
@@ -98,7 +101,8 @@ Solid arrows are the normal path; dotted arrows are failure handling.
 ### Life of an order
 
 1. `POST /orders`: the API validates the body, takes the user from the
-   (simulated) auth context, normalizes the asset symbol and inserts the order
+   (simulated) auth context, normalizes the asset symbol, checks that it is
+   shaped like a B3 ticker and inserts the order
    as `PENDING`. It then publishes `order.created` to the `order_events`
    exchange and answers `201` with the order ID: execution has not happened yet.
 2. RabbitMQ routes the event to the durable `order_execution` queue.
